@@ -288,6 +288,37 @@ class CartesiaJobTests(unittest.TestCase):
             cartesia_job._validate_spoken_text("Satz eins. " + ("Ein langes Wort " * 350), helper)
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe unavailable")
+    def test_actual_audio_store_runs_adapter_and_keeps_single_ready_attempt(self):
+        fixture = self.private / "ledger-fixture.mp3"
+        subprocess.run([shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "anullsrc=channel_layout=mono:sample_rate=44100",
+                        "-t", "0.15", "-codec:a", "libmp3lame", "-b:a", "64k",
+                        "-write_xing", "0", str(fixture)], check=True, timeout=20,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        duration = cartesia_job._probe_mp3(fixture)
+        self.fake_speak.write_text(self.fake_speak.read_text().replace(
+            repr(FIXTURE_MP3), repr(fixture.read_bytes())).replace(
+            "'duration_seconds': 1.25", "'duration_seconds': " + repr(duration)))
+        job_spec = importlib.util.spec_from_file_location("cartesia_test_audio_jobs", MODULE_PATH.with_name("audio-jobs.py"))
+        jobs = importlib.util.module_from_spec(job_spec)
+        sys.modules[job_spec.name] = jobs
+        job_spec.loader.exec_module(jobs)
+        store = jobs.AudioJobStore(self.private / "ledger.sqlite", self.media)
+        metadata = write_private(self.private / "result.json", b'{"phase":"final","title":"Ergebnis"}')
+        spoken = write_private(self.private / "spoken.txt", self.request()["spokenAdaptation"].encode())
+        row = store.enqueue(result_identity="fixture-result", metadata_path=metadata,
+                            spoken_text_path=spoken, voice_profile_sha256="c" * 64, meaningful=True)
+        helper = jobs.HelperConfig((sys.executable,), MODULE_PATH.resolve(), "voice-profile-fixture", 60)
+        with mock.patch.dict(os.environ, {"CARTESIA_JOB_CONFIG_FILE": str(self.config_path)}):
+            completed = store.run_one(helper, lease_seconds=90)
+            self.assertIsNone(store.run_one(helper, lease_seconds=90))
+        self.assertEqual(completed["state"], "ready")
+        self.assertEqual(completed["id"], row["id"])
+        self.assertEqual(completed["media_sha256"], hashlib.sha256(fixture.read_bytes()).hexdigest())
+        self.assertEqual(len(store.attempts(row["id"])), 1)
+        self.assertAlmostEqual(completed["duration_seconds"], duration)
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg/ffprobe unavailable")
     def test_ffprobe_accepts_a_real_synthetic_mp3_fixture(self):
         output = self.private / "synthetic-fixture.mp3"
         result = subprocess.run([

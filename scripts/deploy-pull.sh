@@ -30,6 +30,7 @@ git --git-dir="$repo" archive "$revision" | tar -x -C "$stage"
   export INBOX_DATA_DIR="$test_data"
   "$BUN_BIN" install --frozen-lockfile
   "$BUN_BIN" run typecheck
+  python3 -m unittest discover -s tests/producer -v
   "$BUN_BIN" run test:backend
   "$BUN_BIN" run test:frontend
   "$BUN_BIN" run build
