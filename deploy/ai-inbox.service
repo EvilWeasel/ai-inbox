@@ -11,6 +11,7 @@ ExecStart=%h/.local/lib/ai-inbox/deploy-start.sh
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
+TimeoutStopFailureMode=kill
 KillMode=control-group
 UMask=0077
 NoNewPrivileges=true

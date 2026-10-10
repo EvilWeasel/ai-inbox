@@ -7,7 +7,7 @@ import { getDatabase, openDatabase, type InboxDatabase } from '../../src/server/
 import { ingestSchema } from '../../src/lib/contracts';
 import { upsertBatch, patchItem, listItems } from '../../src/server/items';
 import { importRecords } from '../../src/server/importer';
-import { InboxEventHub, inboxEventResponse, inboxRevision } from '../../src/server/events';
+import { InboxEventHub, inboxEventResponse, inboxRevision, shutdownEventHubs } from '../../src/server/events';
 import { GET } from '../../src/app/api/events/route';
 
 let root: string; let db: InboxDatabase;
@@ -129,4 +129,31 @@ test('additive migration upgrades a populated v1 database without changing owner
     assert.equal(listItems(upgraded, { view: 'all', q: 'content' }).total, 1);
     patchItem(upgraded, id, { read: false }); assert.equal(inboxRevision(db), '1');
   } finally { upgraded.close(); }
+});
+
+test('process shutdown closes active SSE streams, releases hub timers and is idempotent', async (t) => {
+  const prepare = t.mock.method(db.sqlite, 'prepare');
+  const sigtermBefore = process.listenerCount('SIGTERM');
+  const sigintBefore = process.listenerCount('SIGINT');
+  const first = inboxEventResponse(new Request('https://inbox.example/api/events'), new InboxEventHub(db, 10, 10_000)).body!.getReader();
+  assert.match(new TextDecoder().decode((await first.read()).value), /event: baseline/);
+  assert.equal(process.listenerCount('SIGTERM'), sigtermBefore + 1);
+  assert.equal(process.listenerCount('SIGINT'), sigintBefore + 1);
+  const second = inboxEventResponse(new Request('https://inbox.example/api/events'), new InboxEventHub(db, 10, 10_000)).body!.getReader();
+  assert.match(new TextDecoder().decode((await second.read()).value), /event: baseline/);
+  assert.equal(process.listenerCount('SIGTERM'), sigtermBefore + 1);
+  assert.equal(process.listenerCount('SIGINT'), sigintBefore + 1);
+
+  shutdownEventHubs();
+  shutdownEventHubs();
+  assert.equal((await first.read()).done, true);
+  assert.equal((await second.read()).done, true);
+  assert.equal(process.listenerCount('SIGTERM'), sigtermBefore);
+  assert.equal(process.listenerCount('SIGINT'), sigintBefore);
+  const readsAfterShutdown = prepare.mock.callCount();
+  await delay(35);
+  assert.equal(prepare.mock.callCount(), readsAfterShutdown);
+
+  const rejected = inboxEventResponse(new Request('https://inbox.example/api/events'), new InboxEventHub(db));
+  assert.equal((await rejected.body!.getReader().read()).done, true);
 });

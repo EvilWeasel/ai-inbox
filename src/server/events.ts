@@ -6,6 +6,61 @@ export function inboxRevision(db: InboxDatabase): string {
 }
 type Listener = (revision: string | null, heartbeat: boolean) => void;
 
+interface EventLifecycle {
+  hubs: Set<InboxEventHub>;
+  shuttingDown: boolean;
+  registered: boolean;
+  shutdown: () => void;
+}
+
+const lifecycleKey = Symbol.for('ai-inbox.event-hub.lifecycle');
+const lifecycleGlobal = globalThis as typeof globalThis & Record<symbol, EventLifecycle | undefined>;
+
+function lifecycle(): EventLifecycle {
+  return lifecycleGlobal[lifecycleKey] ??= {
+    hubs: new Set(),
+    shuttingDown: false,
+    registered: false,
+    shutdown: shutdownEventHubs,
+  };
+}
+
+function unregisterWhenIdle(state: EventLifecycle) {
+  if (state.hubs.size || !state.registered) return;
+  process.removeListener('SIGTERM', state.shutdown);
+  process.removeListener('SIGINT', state.shutdown);
+  state.registered = false;
+}
+
+function activateHub(hub: InboxEventHub) {
+  const state = lifecycle();
+  if (state.shuttingDown) throw new Error('Event stream server is shutting down');
+  state.hubs.add(hub);
+  if (!state.registered) {
+    // Add our cleanup hook without replacing Next's graceful shutdown handlers.
+    process.on('SIGTERM', state.shutdown);
+    process.on('SIGINT', state.shutdown);
+    state.registered = true;
+  }
+}
+
+function deactivateHub(hub: InboxEventHub) {
+  const state = lifecycle();
+  state.hubs.delete(hub);
+  unregisterWhenIdle(state);
+}
+
+/** Close active streams when the process is asked to stop. Exported so tests
+ * can exercise shutdown without delivering a signal to the test runner.
+ */
+export function shutdownEventHubs() {
+  const state = lifecycle();
+  if (state.shuttingDown) return;
+  state.shuttingDown = true;
+  for (const hub of [...state.hubs]) hub.shutdown();
+  unregisterWhenIdle(state);
+}
+
 /** One bounded read per second per server/database, independent of client count.
  * SQLite commits, rather than filesystem notifications, are the source of truth.
  * No retained event log is needed: every connection receives a resync baseline.
@@ -17,19 +72,37 @@ export class InboxEventHub {
   private heartbeatAt = 0;
   constructor(private db: InboxDatabase, private intervalMs = 1000, private heartbeatMs = 15_000) {}
   subscribe(listener: Listener) {
+    if (lifecycle().shuttingDown) throw new Error('Event stream server is shutting down');
     const revision = inboxRevision(this.db);
     if (!this.listeners.size) {
       this.revision = revision;
       this.heartbeatAt = Date.now();
       this.timer = setInterval(() => this.check(), this.intervalMs);
       this.timer.unref();
+      try { activateHub(this); } catch (error) {
+        clearInterval(this.timer);
+        this.timer = undefined;
+        throw error;
+      }
     }
     this.listeners.add(listener);
     listener(revision, false);
     return () => {
       this.listeners.delete(listener);
-      if (!this.listeners.size) { clearInterval(this.timer); this.timer = undefined; }
+      if (!this.listeners.size) {
+        clearInterval(this.timer);
+        this.timer = undefined;
+        deactivateHub(this);
+      }
     };
+  }
+  shutdown() {
+    clearInterval(this.timer);
+    this.timer = undefined;
+    const listeners = [...this.listeners];
+    this.listeners.clear();
+    deactivateHub(this);
+    for (const listener of listeners) listener(null, false);
   }
   private check() {
     try {
