@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 MODULE_PATH = Path(__file__).parents[2] / "scripts" / "result-decision.py"
 spec = importlib.util.spec_from_file_location("result_decision", MODULE_PATH)
@@ -134,6 +135,95 @@ if "--output-last-message" in args:
         self.assertTrue(any(value == 'web_search="disabled"' for value in args))
         self.assertTrue(any(value == "features.plugins=false" for value in args))
         self.assertTrue(any(value == "project_doc_max_bytes=0" for value in args))
+        work_dirs = list(self.cache.glob("work-*"))
+        self.assertEqual(work_dirs, [])
+
+    def test_native_private_directory_is_established_before_any_subprocess_or_file_write(self):
+        self._fake_codex()
+        order = []
+        ensure = decision_module.private_files.ensure_private_directory
+        assert_private = decision_module.private_files.assert_private_directory
+        create_file = decision_module.private_files.create_private_file
+        run_bounded = decision_module._run_bounded
+
+        def ensure_private(path):
+            if Path(path) != self.cache:
+                order.append("private-directory")
+            result = ensure(path)
+            if Path(path) != self.cache and os.name != "nt":
+                self.assertEqual(Path(result).stat().st_mode & 0o777, 0o700)
+            return result
+
+        def create_private(path, data):
+            order.append("private-file")
+            return create_file(path, data)
+
+        def assert_private_directory(path):
+            if Path(path) != self.cache:
+                order.append("private-directory")
+            result = assert_private(path)
+            if Path(path) != self.cache and os.name != "nt":
+                self.assertEqual(Path(result).stat().st_mode & 0o777, 0o700)
+            return result
+
+        def run_process(*args, **kwargs):
+            order.append("subprocess")
+            return run_bounded(*args, **kwargs)
+
+        with (mock.patch.object(decision_module.private_files, "ensure_private_directory", side_effect=ensure_private),
+              mock.patch.object(decision_module.private_files, "assert_private_directory", side_effect=assert_private_directory),
+              mock.patch.object(decision_module.private_files, "create_private_file", side_effect=create_private),
+              mock.patch.object(decision_module, "_run_bounded", side_effect=run_process)):
+            self._run()
+        self.assertEqual(order[0], "private-directory")
+        self.assertLess(order.index("private-directory"), order.index("subprocess"))
+        self.assertLess(order.index("private-directory"), order.index("private-file"))
+        if os.name != "nt":
+            self.assertGreaterEqual(order.count("private-directory"), 1)
+            self.assertEqual(list(self.cache.glob("work-*")), [])
+
+    @unittest.skipIf(os.name == "nt", "POSIX mode collision check")
+    def test_random_name_collision_is_skipped_without_chmod_or_cleanup(self):
+        collision = self.cache / ("work-" + "a" * 32)
+        collision.mkdir(mode=0o755)
+        collision.chmod(0o755)
+        with mock.patch.object(decision_module.secrets, "token_hex", side_effect=["a" * 32, "b" * 32]):
+            work = decision_module._private_work_directory(self.cache)
+        try:
+            self.assertEqual(work.name, "work-" + "b" * 32)
+            self.assertEqual(collision.stat().st_mode & 0o777, 0o755)
+            self.assertTrue(collision.is_dir())
+        finally:
+            decision_module._remove_private_work_directory(work)
+
+    def test_native_private_directory_failure_stops_before_subprocess_and_cleans_candidate(self):
+        self._fake_codex()
+        ensure = decision_module.private_files.ensure_private_directory
+        assert_private = decision_module.private_files.assert_private_directory
+
+        def fail_work_validation(path):
+            if Path(path) == self.cache:
+                return assert_private(path)
+            raise decision_module.private_files.PrivateFileError("denied")
+
+        with (mock.patch.object(decision_module.private_files, "assert_private_directory", side_effect=fail_work_validation),
+              mock.patch.object(decision_module, "_run_bounded") as run_bounded):
+            with self.assertRaisesRegex(decision_module.DecisionError, "private decision work directory"):
+                self._run()
+        run_bounded.assert_not_called()
+        self.assertFalse(self.calls.exists())
+        self.assertEqual(list(self.cache.glob("work-*")), [])
+
+    def test_cache_hit_does_not_allocate_work_directory_or_start_subprocess(self):
+        self._fake_codex()
+        config = decision_module.load_config(self.config_path)
+        raw = json.dumps(self.request, ensure_ascii=False, separators=(",", ":")).encode()
+        expected = decision_module._invoke(raw, config)
+        with (mock.patch.object(decision_module.private_files, "ensure_private_directory") as ensure,
+              mock.patch.object(decision_module, "_run_bounded") as run_bounded):
+            self.assertEqual(decision_module._invoke(raw, config), expected)
+        ensure.assert_not_called()
+        run_bounded.assert_not_called()
 
     def test_exclude_and_review_are_normalized_to_pipeline_exact_keys(self):
         for outcome in ("exclude", "review"):
@@ -177,6 +267,7 @@ if "--output-last-message" in args:
         with self.assertRaisesRegex(decision_module.DecisionError, "timed out"):
             self._run()
         self.assertNotIn(self.request["capturedFinalText"], self.calls.read_text())
+        self.assertEqual(list(self.cache.glob("work-*")), [])
 
     def test_tool_or_command_attempt_fails_closed_without_cache(self):
         self._fake_codex(events=[{"type": "item.completed", "item": {"type": "command_execution", "command": "ignored"}}])

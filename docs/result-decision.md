@@ -97,8 +97,17 @@ are filtered from the child; normal path and existing DBus session variables
 are retained. Model, effort, tier, request, schema, and executable identity
 participate in the cache key.
 
-Each invocation uses a fresh protected temporary working directory which is
-removed on completion. No project files are made available to the process.
+Each cache miss uses a fresh random working directory directly under the
+already validated private `cacheDir`. The adapter creates it with
+an exclusive mode-0700 directory creation on POSIX, or `private-files.py`'s
+native ACL-safe directory helper on Windows, then validates it with the
+helper before writing the schema or output file and before starting any Codex
+subprocess, including the CLI capability check. Windows uses the helper's
+owner and protected-DACL checks without chmod. The invocation
+removes only the directory it created on success, process failure, or timeout.
+Persistent normalized cache entries remain siblings of these temporary
+directories and are not removed during cleanup. No project files are made
+available to the process.
 The JSON event stream must contain exactly one successful completed turn;
 unknown events, errors, failed turns, tool/command events, malformed events,
 timeouts, nonzero exit, missing structured final output, or output over the

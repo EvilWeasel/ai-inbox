@@ -14,9 +14,10 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
+import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 from typing import Any
 
@@ -386,6 +387,56 @@ def _read_cache(path: Path) -> bytes | None:
         raise DecisionError("private decision cache entry is invalid")
 
 
+def _private_work_directory(cache_dir: Path) -> Path:
+    """Create a fresh, native-private work directory under the validated cache."""
+    for _attempt in range(16):
+        work = cache_dir / ("work-" + secrets.token_hex(16))
+        created = False
+        try:
+            if os.name == "nt":
+                # The native helper creates with a protected DACL. Precheck
+                # random-name collisions because its ensure API also accepts
+                # an already existing private directory.
+                if work.exists() or work.is_symlink():
+                    continue
+                private_files.ensure_private_directory(work)
+                created = True
+            else:
+                # mkdir is exclusive and applies 0700 at creation, so a race
+                # cannot make the helper chmod an existing unowned directory.
+                work.mkdir(mode=0o700)
+                created = True
+            private_files.assert_private_directory(work)
+            return work
+        except FileExistsError:
+            continue
+        except (OSError, private_files.PrivateFileError):
+            if created:
+                # Validation failed after our exclusive creation. Remove only
+                # this empty directory, and never traverse a reparse point.
+                try:
+                    private_files.assert_directory_no_reparse(work)
+                    work.rmdir()
+                except (FileNotFoundError, OSError, private_files.PrivateFileError):
+                    pass
+            raise DecisionError("private decision work directory is unavailable")
+    raise DecisionError("private decision work directory could not be allocated")
+
+
+def _remove_private_work_directory(work: Path) -> None:
+    """Remove only the invocation-owned tree without traversing reparse points."""
+    try:
+        private_files.assert_directory_no_reparse(work)
+        # shutil.rmtree does not follow symlinks and uses an fd-based safe
+        # implementation where the platform supports it (including junction
+        # handling on Windows). The root was created uniquely by this call.
+        shutil.rmtree(work)
+    except FileNotFoundError:
+        return
+    except (OSError, private_files.PrivateFileError) as exc:
+        raise DecisionError("private decision work directory cleanup failed") from exc
+
+
 def _invoke(request_raw: bytes, config: dict) -> bytes:
     request = _read_request(request_raw)
     key = _cache_key(request_raw, config)
@@ -394,9 +445,11 @@ def _invoke(request_raw: bytes, config: dict) -> bytes:
     if cached is not None:
         return cached
 
-    _supports_exec_options(config)
-    with tempfile.TemporaryDirectory(prefix="result-decision-") as work_name:
-        work = private_files.ensure_private_directory(Path(work_name))
+    work = _private_work_directory(Path(config["cacheDir"]))
+    try:
+        # Establish supported CLI behavior only after the native private
+        # directory has been created, and before writing either output file.
+        _supports_exec_options(config)
         schema_path = work / "output-schema.json"
         output_path = work / "last-message.json"
         private_files.create_private_file(schema_path, json.dumps(_schema(), separators=(",", ":")).encode())
@@ -464,6 +517,8 @@ def _invoke(request_raw: bytes, config: dict) -> bytes:
         except (OSError, private_files.PrivateFileError) as exc:
             raise DecisionError("private decision cache write failed") from exc
         return normalized_raw
+    finally:
+        _remove_private_work_directory(work)
 
 
 def main(argv: list[str] | None = None) -> int:
