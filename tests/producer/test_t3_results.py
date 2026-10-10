@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -69,6 +70,61 @@ class T3ResultsTests(unittest.TestCase):
 
     def cfg(self):
         return bridge.load_config(self.config_path)
+
+    def test_snapshot_fetch_accepts_large_valid_projection_with_bounded_read(self):
+        # Existing T3 threads can have enough projected message history to
+        # exceed the old 5 MiB limit while the response remains bounded.
+        messages = [{'id': f'message-{i}', 'text': 'x' * 900_000} for i in range(6)]
+        p = projection()
+        p['attempts'] = []
+        p['turnItems'] = []
+        p['messages'] = messages
+        payload = json.dumps({'projection': p}, separators=(',', ':')).encode()
+        self.assertGreater(len(payload), 5 * 1024 * 1024)
+        self.assertLessEqual(len(payload), bridge.MAX_SNAPSHOT)
+
+        class Response:
+            def __init__(self, content):
+                self.stream = io.BytesIO(content)
+                self.requested = None
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, limit):
+                self.requested = limit
+                return self.stream.read(limit)
+
+        response = Response(payload)
+        with patch.object(bridge, 'token_from', return_value='test-only-token'), \
+             patch.object(bridge, 'http_opener', return_value=type('Opener', (), {
+                 'open': lambda _self, _request, timeout: response
+             })()):
+            fetched = bridge.fetch_snapshot(self.cfg(), 'thread-selected')
+
+        self.assertEqual(fetched['projection']['thread']['id'], 'thread-selected')
+        self.assertEqual(len(fetched['projection']['messages']), 6)
+        self.assertEqual(response.requested, bridge.MAX_SNAPSHOT + 1)
+
+    def test_snapshot_fetch_rejects_response_over_hard_bound(self):
+        class Response:
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self, limit):
+                self.requested = limit
+                return b'x' * limit
+
+        response = Response()
+        with patch.object(bridge, 'token_from', return_value='test-only-token'), \
+             patch.object(bridge, 'http_opener', return_value=type('Opener', (), {
+                 'open': lambda _self, _request, timeout: response
+             })()):
+            with self.assertRaisesRegex(bridge.BridgeError, '16 MiB safety bound'):
+                bridge.fetch_snapshot(self.cfg(), 'thread-selected')
+
+        self.assertEqual(response.requested, bridge.MAX_SNAPSHOT + 1)
 
     def row(self):
         db = bridge.connect_db(self.cfg())

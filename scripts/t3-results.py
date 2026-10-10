@@ -23,7 +23,7 @@ if _PRIVATE_FILES_SPEC is None or _PRIVATE_FILES_SPEC.loader is None:
 private_files = importlib.util.module_from_spec(_PRIVATE_FILES_SPEC)
 _PRIVATE_FILES_SPEC.loader.exec_module(private_files)
 
-MAX_SNAPSHOT = 5 * 1024 * 1024
+MAX_SNAPSHOT = 16 * 1024 * 1024
 MAX_METADATA = 2_000_000
 MAX_AUDIO = 30 * 1024 * 1024
 ACTIVE = {"preparing", "queued", "starting", "running", "waiting", "pending", "idle"}
@@ -143,7 +143,7 @@ def fetch_snapshot(config: dict, thread_id: str) -> dict:
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise BridgeError("T3 snapshot request failed") from exc
     if len(raw) > MAX_SNAPSHOT:
-        raise BridgeError("T3 snapshot exceeds the 5 MiB safety bound")
+        raise BridgeError("T3 snapshot exceeds the 16 MiB safety bound")
     try:
         snapshot = json.loads(raw)
     except (UnicodeError, json.JSONDecodeError) as exc:
