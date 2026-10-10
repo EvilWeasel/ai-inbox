@@ -1,0 +1,224 @@
+/* Import after globals.css. Visual overrides only; pane and dock layout stays there. */
+:root {
+  --primary-foreground: #ffffff;
+  --inbox-surface: #ffffff;
+  --inbox-text: #25252b;
+  --inbox-primary: #6250bd;
+  --inbox-focus: #7562cc;
+  --inbox-danger: #b42335;
+  --inbox-surface-muted: #f0f0f3;
+  --inbox-text-muted: #666671;
+  --inbox-line: #e2e2e8;
+  --inbox-selection: #e5e0fa;
+  --inbox-sidebar: #f6f6f8;
+  --inbox-brand-surface: #ebe7f8;
+  --inbox-brand-text: #6250bd;
+  --inbox-nav-text: #62626e;
+  --inbox-nav-active: #eae7f3;
+  --inbox-nav-active-text: #453579;
+  --inbox-count-text: #686273;
+  --inbox-footer-text: #696973;
+  --inbox-status: #858592;
+  --inbox-search-surface: #f5f5f7;
+  --inbox-search-line: #7562cc;
+  --inbox-search-glow: #eae5fa;
+  --inbox-search-icon: #72727f;
+  --inbox-filter-text: #50505d;
+  --inbox-row-line: #ebebef;
+  --inbox-row-hover: #f7f7fa;
+  --inbox-row-selected: #f0edf9;
+  --inbox-kind-text: #6e6e7a;
+  --inbox-kind-alert: #926124;
+  --inbox-foot-text: #70707a;
+  --inbox-audio-text: #6250bd;
+  --inbox-action-text: #555561;
+  --inbox-kicker-text: #6250a7;
+  --inbox-audio-line: #e3dff0;
+  --inbox-audio-surface: #f8f7fc;
+  --inbox-audio-heading: #6250bd;
+  --inbox-summary-text: #52525e;
+  --inbox-body-text: #383842;
+  --inbox-link: #5451b5;
+  --inbox-quote-line: #b7acd9;
+  --inbox-code-surface: #f2f2f6;
+  --inbox-tag-text: #686873;
+  --inbox-source-line: #ebebef;
+  --inbox-source-surface: #f0f0f5;
+  --inbox-source-title: #454550;
+  --inbox-empty-icon: #777785;
+  --inbox-state-title: #393944;
+  --inbox-empty-muted: #7b7b88;
+  --inbox-error-line: #efccd3;
+  --inbox-error-surface: #fff4f6;
+  --inbox-error-text: #a92d40;
+  --inbox-list-surface: #fcfcfd;
+  --inbox-dock-surface: #f8f8fa;
+}
+
+:root.dark {
+  --primary-foreground: #ffffff;
+  --inbox-surface: #1b1b1f;
+  --inbox-text: #eeeef2;
+  --inbox-primary: #7967c9;
+  --inbox-focus: #aa98ed;
+  --inbox-danger: #f2a5b0;
+  --inbox-surface-muted: #29292f;
+  --inbox-text-muted: #a4a4b0;
+  --inbox-line: #34343c;
+  --inbox-selection: #463b68;
+  --inbox-sidebar: #161619;
+  --inbox-brand-surface: #2c263e;
+  --inbox-brand-text: #baa9f2;
+  --inbox-nav-text: #aeacb9;
+  --inbox-nav-active: #2c273b;
+  --inbox-nav-active-text: #dbd2f6;
+  --inbox-count-text: #bab2ce;
+  --inbox-footer-text: #a2a0ac;
+  --inbox-status: #93909f;
+  --inbox-search-surface: #242429;
+  --inbox-search-line: #aa98ed;
+  --inbox-search-glow: #39314f;
+  --inbox-search-icon: #a4a4b0;
+  --inbox-filter-text: #b7b7c1;
+  --inbox-row-line: #2b2b32;
+  --inbox-row-hover: #26262c;
+  --inbox-row-selected: #2c283b;
+  --inbox-kind-text: #aaa7b6;
+  --inbox-kind-alert: #d8b580;
+  --inbox-foot-text: #a09eac;
+  --inbox-audio-text: #b7a8eb;
+  --inbox-action-text: #c6c4cf;
+  --inbox-kicker-text: #b7a8eb;
+  --inbox-audio-line: #3c354f;
+  --inbox-audio-surface: #24212e;
+  --inbox-audio-heading: #c7b8f4;
+  --inbox-summary-text: #c2c0cd;
+  --inbox-body-text: #d7d5df;
+  --inbox-link: #b5b1ff;
+  --inbox-quote-line: #72628f;
+  --inbox-code-surface: #26262e;
+  --inbox-tag-text: #aba8b8;
+  --inbox-source-line: #2e2e36;
+  --inbox-source-surface: #2a2a33;
+  --inbox-source-title: #d2cfde;
+  --inbox-empty-icon: #a39faf;
+  --inbox-state-title: #d8d5e1;
+  --inbox-empty-muted: #9c99aa;
+  --inbox-error-line: #65404c;
+  --inbox-error-surface: #32232b;
+  --inbox-error-text: #f2a5b0;
+  --inbox-list-surface: #1e1e23;
+  --inbox-dock-surface: #202025;
+}
+
+/* T3's system typography, quiet controls and distinct chrome inform this workbench. */
+.inbox-shell, .player-dock, .mobile-sidebar {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.sidebar-brand { font-weight: 600; letter-spacing: -.35px; }
+.brand-mark { border: 1px solid var(--inbox-audio-line); border-radius: 8px; }
+.nav-item { min-height: 44px; border-radius: 8px; }
+.nav-count { font-size: 11px; }
+.nav-item.active .nav-count { color: var(--inbox-nav-active-text); }
+.list-panel { background: var(--inbox-list-surface); }
+.list-header { background: var(--inbox-list-surface); }
+.heading-row h1 { font-size: 22px; font-weight: 600; letter-spacing: -.65px; }
+.search-form { border-radius: 8px; transition: border-color 140ms, box-shadow 140ms; }
+.search-form input { min-width: 0; height: 44px; }
+.search-form input::placeholder { color: var(--inbox-text-muted); opacity: 1; }
+.search-form button { width: 44px; height: 44px; }
+.filter-row { gap: 6px; }
+.filter-row select { min-height: 44px; border-radius: 6px; }
+.filter-row select:focus-visible { outline-offset: 0; }
+.item-row { padding-top: 19px; padding-bottom: 19px; color: var(--foreground); }
+.item-row.selected::before { width: 2px; }
+.item-title { font-weight: 500; line-height: 1.5; letter-spacing: -.18px; }
+.unread .item-title { font-weight: 600; }
+.item-meta { font-size: 11px; margin-bottom: 8px; }
+.item-summary { font-size: 13px; line-height: 1.6; }
+.item-foot { font-size: 11px; margin-top: 12px; }
+.detail-toolbar { background: var(--inbox-surface); }
+.detail-actions button, .refresh-button, .mobile-menu, .back-button {
+  min-height: 44px;
+  min-width: 44px;
+  border-radius: 8px;
+}
+.detail-actions button:hover, .refresh-button:hover, .mobile-menu:hover, .back-button:hover {
+  background: var(--inbox-surface-muted);
+}
+.article { max-width: 780px; }
+.article > h2 { font-weight: 600; letter-spacing: -.9px; line-height: 1.3; }
+.article-kicker { font-size: 11px; letter-spacing: .65px; }
+.article-summary { line-height: 1.75; }
+.markdown { line-height: 1.8; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 { color: var(--foreground); }
+.markdown a { text-decoration-color: var(--inbox-quote-line); text-decoration-thickness: 1px; }
+.markdown a:hover { text-decoration-color: currentColor; }
+.tags > span { font-size: 11px; }
+.source-title { font-size: 13px; }
+.source-url { font-size: 11px; }
+.sources a { min-height: 44px; }
+.theme-control select { min-height: 44px; border-radius: 8px; }
+.theme-control p { font-size: 11px; }
+.mobile-sidebar > button { min-width: 44px; min-height: 44px; }
+
+/* Preserve the provider's real grid row and native seek semantics. */
+.player-dock {
+  background: var(--inbox-dock-surface);
+  box-shadow: 0 -1px 0 rgb(0 0 0 / .03);
+}
+.player-title { color: var(--foreground); border-radius: 6px; padding: 0 4px; }
+.player-title:hover { color: var(--inbox-link); }
+.player-state { font-size: 11px; }
+.player-controls > button, .detail-play-control {
+  background: var(--inbox-primary);
+  color: var(--primary-foreground);
+  border-color: var(--inbox-primary);
+  border-radius: 9px;
+  transition: filter 140ms;
+}
+.player-controls > button:hover:enabled, .detail-play-control:hover:enabled { filter: brightness(.94); }
+.player-controls > button:disabled { background: var(--inbox-surface-muted); color: var(--muted); border-color: var(--border); }
+.player-speed select { min-width: 60px; background: var(--inbox-dock-surface); }
+.player-progress input { accent-color: var(--inbox-focus); }
+.audio-player { border-radius: 10px; padding: 14px; }
+.audio-duration { font-size: 12px; line-height: 1.6; }
+
+@media (max-width: 640px) {
+  .list-header {
+    padding-left: max(20px, env(safe-area-inset-left));
+    padding-right: max(20px, env(safe-area-inset-right));
+  }
+  .item-row {
+    padding-left: max(22px, env(safe-area-inset-left));
+    padding-right: max(22px, env(safe-area-inset-right));
+  }
+  .heading-row h1 { font-size: 23px; }
+  .search-form input { font-size: 16px; }
+  .filter-row select { font-size: 13px; }
+  .detail-toolbar {
+    height: auto;
+    min-height: 64px;
+    padding-top: env(safe-area-inset-top);
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+    gap: 6px;
+  }
+  .detail-actions { gap: 2px; }
+  .article {
+    padding-left: max(22px, env(safe-area-inset-left));
+    padding-right: max(22px, env(safe-area-inset-right));
+  }
+  .article > h2 { font-size: 27px; letter-spacing: -.7px; }
+  .player-dock { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+  .player-recording { gap: 10px; }
+  .player-state { white-space: nowrap; }
+  .player-title { font-size: 12px; }
+  .player-controls { gap: 12px; }
+  .audio-player { gap: 10px; }
+  .detail-play-control { margin-right: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-form, .player-controls > button, .detail-play-control { transition: none; }
+}
