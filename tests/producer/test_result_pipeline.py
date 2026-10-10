@@ -769,6 +769,9 @@ class ResultPipelineTests(unittest.TestCase):
             candidates.append((cid, completed))
             capdb.execute("INSERT INTO candidates(candidate_id,thread_id,run_id,completed_at,status,reason,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
                 (cid, f"thread-{idx}", f"run-{idx}", completed, "observed", "fixture", completed, completed))
+        capdb.execute("UPDATE candidates SET text_file='captured-fixture.json'")
+        capdb.execute("INSERT INTO candidates(candidate_id,thread_id,run_id,completed_at,status,reason,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                      ("f" * 64, "missing-thread", "missing-run", "2026-10-10T11:00:00Z", "needs_review", "projection unavailable", "now", "now"))
         capdb.commit(); capdb.close()
         pipe_db = pipeline_module._connect(self.config)
         try:

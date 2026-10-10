@@ -1160,7 +1160,7 @@ def _candidate_ids(config: dict, limit: int, pass_name: str = "new") -> list[str
         else:
             last_time, last_id = cursor["last_completed_at"], cursor["last_candidate_id"]
         scan_limit = max(100, limit * 20)
-        select_sql = "SELECT candidate_id,completed_at,status FROM candidates WHERE completed_at>=? AND status IN ('needs_review','observed')"
+        select_sql = "SELECT candidate_id,completed_at,status FROM candidates WHERE completed_at>=? AND status IN ('needs_review','observed') AND text_file IS NOT NULL"
         if last_time:
             rows = db.execute(select_sql + " AND (completed_at>? OR (completed_at=? AND candidate_id>?)) ORDER BY completed_at,candidate_id LIMIT ?",
                               (epoch_text,last_time,last_time,last_id,scan_limit)).fetchall()
