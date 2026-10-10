@@ -200,7 +200,9 @@ def _resolve_release(config: dict[str, Any]) -> Path:
     # The symlink at current is the sole permitted reparse point.
     private_files.assert_directory_no_reparse(candidate)
     resolved = candidate.resolve(strict=True)
-    if resolved != candidate or resolved.parent != deployment_root.resolve(strict=True):
+    releases_root = deployment_root / "releases"
+    private_files.assert_directory_no_reparse(releases_root)
+    if resolved != candidate or resolved.parent != releases_root.resolve(strict=True):
         raise WorkerError("current release target is not a direct immutable release")
     for component in [deployment_root, resolved]:
         if component.is_symlink():

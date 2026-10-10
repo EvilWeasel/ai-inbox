@@ -30,7 +30,7 @@ Required fields:
 
 | Field | Meaning |
 | --- | --- |
-| `appReleaseLink` | The deployment's `current` symlink. Its target must resolve to one direct child release directory of the deployment root. |
+| `appReleaseLink` | The deployment's `current` symlink. Its target must resolve to one direct child directory of the deployment root’s `releases` directory. |
 | `nodeExecutable` | Absolute executable Node path. |
 | `appDataDir` | Private application data directory passed as `INBOX_DATA_DIR`. |
 | `deployLockPath` | Existing private deployment lock shared with release switching. |

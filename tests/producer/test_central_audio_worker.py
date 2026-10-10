@@ -109,7 +109,7 @@ class CentralAudioWorkerTests(unittest.TestCase):
         (self.release / "node_modules" / "tsx" / "dist").mkdir(parents=True)
         private_file(self.release / "scripts" / "central-audio.ts", b"// fixture\n")
         private_file(self.release / "node_modules" / "tsx" / "dist" / "cli.mjs", b"// fixture\n")
-        self.current = self.release.parent / "current"
+        self.current = self.private / "current"
         self.current.symlink_to(self.release, target_is_directory=True)
         self.adapter = private_file(self.private / "cartesia-job.py", b"# fake adapter\n")
         self.renderer_calls = self.private / "renderer-calls"
@@ -344,6 +344,9 @@ class CentralAudioWorkerTests(unittest.TestCase):
         self.assertEqual(len(generating), 1)
         self.assertEqual(backend.attaches[0]["requestId"], ready[0])
         self.assertEqual(backend.attaches[0]["ledgerJobId"], backend.rows[ready[0]]["ledger_job_id"])
+
+    def test_current_resolves_the_actual_deployment_releases_layout(self):
+        self.assertEqual(worker_mod._resolve_release(self.config), self.release)
 
     def test_bad_row_is_reviewed_without_poisoning_other_rows_and_release_escape_is_rejected(self):
         row = self.row()
