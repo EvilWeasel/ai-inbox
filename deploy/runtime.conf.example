@@ -1,0 +1,12 @@
+# Documentation only. The installer writes a private mode-0600 shell config.
+# Supply real values at installation; never commit the generated configuration.
+REPO_URL=https://github.com/OWNER/REPOSITORY.git
+DEPLOY_ROOT=/absolute/private/deployment
+INBOX_DATA_DIR=/absolute/private/data
+BIND_ADDRESS=NETBIRD_IPV4
+NETBIRD_INTERFACE=NETBIRD_INTERFACE_NAME
+PORT=3000
+BUN_BIN=/absolute/path/to/bun
+NODE_BIN=/absolute/path/to/node
+RELEASE_KEEP=5
+BACKUP_KEEP=7

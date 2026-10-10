@@ -1,0 +1,11 @@
+[Unit]
+Description=Keep private AI Inbox synchronized with local briefing artifacts
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+Unit=ai-inbox-ingest.service
+
+[Install]
+WantedBy=timers.target

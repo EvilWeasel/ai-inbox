@@ -1,0 +1,12 @@
+[Unit]
+Description=Check public AI Inbox main periodically
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=ai-inbox-deploy.service
+
+[Install]
+WantedBy=timers.target

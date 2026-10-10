@@ -1,0 +1,10 @@
+[Unit]
+Description=Verify and deploy public AI Inbox main
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/lib/ai-inbox/deploy-pull.sh
+TimeoutStartSec=30min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
