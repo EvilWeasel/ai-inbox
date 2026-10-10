@@ -79,6 +79,7 @@ class ResultPipelineTests(unittest.TestCase):
         self.outbox = self.private / "outbox"
         self.outbox.mkdir(mode=0o700)
         self.outbox.chmod(0o700)
+        pipeline_module.private_files.create_private_file(self.outbox / "outbox.sqlite3", b"")
         outbox_db = sqlite3.connect(self.outbox / "outbox.sqlite3")
         outbox_db.execute("CREATE TABLE deliveries(delivery_id TEXT,thread_id TEXT,run_id TEXT,state TEXT,receipt_json TEXT,created_at TEXT)")
         outbox_db.commit(); outbox_db.close()
