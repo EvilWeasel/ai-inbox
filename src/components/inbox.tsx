@@ -7,7 +7,6 @@ import {
   ArchiveRestore,
   ArrowLeft,
   ArrowUpRight,
-  AudioLines,
   Check,
   ChevronRight,
   Inbox as InboxIcon,
@@ -19,7 +18,6 @@ import {
   RefreshCw,
   Search,
   X,
-  Zap,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -37,6 +35,7 @@ import {
 } from "@/components/ui/sheet";
 
 import type { InboxItem, ItemView, ItemList } from "@/lib/contracts";
+import { NotificationType, notificationTypeLabel } from "@/components/notification-type";
 export type { InboxItem } from "@/lib/contracts";
 type View = ItemView;
 type ListResult = ItemList;
@@ -75,6 +74,7 @@ function readingBody(item: InboxItem) {
   return first === item.title ? parts.slice(1).join("\n\n") : item.body;
 }
 function sourceLabel(item: InboxItem) {
+  if (item.kind === "result") return item.origin?.host || item.origin?.project || "";
   const source = item.sources[0];
   if (!source)
     return item.kind === "briefing" ? "Daily briefing" : "Release alert";
@@ -83,6 +83,19 @@ function sourceLabel(item: InboxItem) {
   } catch {
     return source.title;
   }
+}
+function safeThreadUrl(value: string | null | undefined) {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if ((url.protocol === "https:" || url.protocol === "http:") && url.hostname && !url.username && !url.password)
+      return url.href;
+    if (url.protocol === "t3-thread:" && url.hostname === "v1" &&
+      !url.username && !url.password && !url.port && !url.search && !url.hash &&
+      /^\/[A-Za-z0-9_-]+$/.test(url.pathname))
+      return `t3-thread://v1${url.pathname}`;
+  } catch { /* Malformed or unsupported thread references are not links. */ }
+  return undefined;
 }
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: "no-store", ...options });
@@ -142,7 +155,7 @@ export function Inbox() {
     : "inbox";
   const q = params.get("q") || "";
   const rawKind = params.get("kind");
-  const kind = rawKind === "briefing" || rawKind === "alert" ? rawKind : "";
+  const kind = rawKind === "briefing" || rawKind === "alert" || rawKind === "result" ? rawKind : "";
   const selectedId = params.get("item");
   const [search, setSearch] = useState(q);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -680,6 +693,7 @@ export function Inbox() {
                 <option value="">All types</option>
                 <option value="briefing">Briefings</option>
                 <option value="alert">Release alerts</option>
+                <option value="result">Agent results</option>
               </select>
               {q && (
                 <span className="query-label" title={q}>
@@ -718,7 +732,7 @@ export function Inbox() {
                     ? "Try another search or change the type filter."
                     : view === "archive"
                       ? "Items you archive will appear here."
-                      : "New briefings and release alerts will appear here when they arrive."}
+                      : "Briefings, release alerts, and agent results will appear here when they arrive."}
                 </p>
                 {(q || kind) && (
                   <Button
@@ -748,16 +762,8 @@ export function Inbox() {
                         onClick={() => navigate({ item: item.id })}
                       >
                         <span className="item-meta">
-                          <span className={`kind-icon ${item.kind}`}>
-                            {item.kind === "briefing" ? (
-                              <Newspaper size={14} />
-                            ) : (
-                              <Zap size={14} />
-                            )}
-                          </span>
-                          <span className="source-name">
-                            {sourceLabel(item)}
-                          </span>
+                          <NotificationType kind={item.kind} resultType={item.resultType} audioAvailable={item.audioAvailable} />
+                          {sourceLabel(item) && <span className="source-name">{sourceLabel(item)}</span>}
                           <time dateTime={item.publishedAt}>
                             {formatDate(item.publishedAt)}
                           </time>
@@ -777,15 +783,9 @@ export function Inbox() {
                           <span>
                             {item.kind === "briefing"
                               ? `${item.edition ? `${item.edition[0].toUpperCase()}${item.edition.slice(1)} ` : ""}briefing`
-                              : "Release alert"}
+                              : notificationTypeLabel(item.kind, item.resultType)}
                           </span>
                           {item.archivedAt && <span>Archived</span>}
-                          {item.audioAvailable && (
-                            <span className="audio-indicator">
-                              <AudioLines size={13} />
-                              <span className="sr-only">Audio available</span>
-                            </span>
-                          )}
                         </span>
                       </button>
                     </li>
@@ -836,11 +836,7 @@ export function Inbox() {
                   Back to list
                 </Button>
                 <span className="desktop-detail-label">
-                  {detail?.kind === "briefing"
-                    ? "Briefing"
-                    : detail?.kind === "alert"
-                      ? "Release alert"
-                      : "Item"}
+                  {detail ? notificationTypeLabel(detail.kind, detail.resultType) : "Item"}
                 </span>
                 {detail && (
                   <div className="detail-actions">
@@ -897,11 +893,7 @@ export function Inbox() {
                   detail && (
                     <article className="article">
                       <div className="article-kicker">
-                        <span>
-                          {detail.kind === "briefing"
-                            ? "Daily briefing"
-                            : "Release alert"}
-                        </span>
+                        <NotificationType kind={detail.kind} resultType={detail.resultType} audioAvailable={detail.audioAvailable} />
                         {detail.edition && (
                           <span>· {detail.edition} edition</span>
                         )}
@@ -909,6 +901,17 @@ export function Inbox() {
                           <Badge variant="secondary">Archived</Badge>
                         )}
                       </div>
+                      {detail.kind === "result" && detail.origin && (
+                        <div className="result-origin" aria-label="Result origin">
+                          <span className="result-origin-label">From</span>
+                          {detail.origin.host && <span className="origin-value" title={detail.origin.host}>{detail.origin.host}</span>}
+                          {detail.origin.project && <span className="origin-value" title={detail.origin.project}>{detail.origin.project}</span>}
+                          {detail.origin.model && <span className="origin-value" title={detail.origin.model}>{detail.origin.model}</span>}
+                          {safeThreadUrl(detail.origin.threadUrl) && (
+                            <a href={safeThreadUrl(detail.origin.threadUrl)} target="_blank" rel="noopener noreferrer">Open source thread<span className="sr-only"> (opens in new tab)</span></a>
+                          )}
+                        </div>
+                      )}
                       <h2 ref={detailHeading} tabIndex={-1}>
                         {detail.title}
                       </h2>
@@ -1025,7 +1028,7 @@ export function Inbox() {
                 <Newspaper size={30} strokeWidth={1.3} />
               </span>
               <h2>Select an item to read</h2>
-              <p>Briefings, release notes, and their sources appear here.</p>
+              <p>Briefings, release alerts, agent results, and their sources appear here.</p>
             </div>
           )}
         </section>

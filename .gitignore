@@ -19,3 +19,5 @@ data/
 runtime.conf
 playwright-report/
 test-results/
+__pycache__/
+*.pyc

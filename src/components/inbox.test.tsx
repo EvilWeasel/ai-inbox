@@ -41,6 +41,8 @@ const fixture: InboxItem = {
   id: "test-item",
   title: "Test release",
   kind: "alert",
+  resultType: null,
+  origin: null,
   edition: null,
   publishedAt: "2026-10-10T12:00:00Z",
   body: "## Release details\nRead the [official source](https://example.org/release).",
@@ -51,6 +53,20 @@ const fixture: InboxItem = {
   readAt: null,
   archivedAt: null,
   tags: ["test"],
+};
+const resultFixture: InboxItem = {
+  ...fixture,
+  id: "agent-result",
+  title: "Implemented cache invalidation",
+  kind: "result",
+  resultType: "implementation",
+  origin: {
+    host: "hephaestus",
+    project: "ai-inbox",
+    model: "gpt-6-codex",
+    threadId: "thread-123",
+    threadUrl: "t3-thread://v1/thread-123",
+  },
 };
 const result = (item = fixture) => ({
   items: [item],
@@ -172,6 +188,79 @@ describe("inbox API interactions", () => {
         (screen.getByLabelText("Search items") as HTMLInputElement).value,
       ).toBe("earlier"),
     );
+  });
+  it("requests agent results with kind=result when the type filter changes", async () => {
+    fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
+      ? response(result(resultFixture)) : response({ item: resultFixture }));
+    render(<Inbox />);
+    await screen.findByRole("button", { name: /Implemented cache invalidation/ });
+    fireEvent.change(screen.getByLabelText("Show"), { target: { value: "result" } });
+    await waitFor(() => {
+      expect(window.location.search).toContain("kind=result");
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("kind=result"))).toBe(true);
+    });
+  });
+  it("shows result origin and only links validated HTTP(S) or strict T3 thread URLs", async () => {
+    const item = { ...resultFixture, origin: { ...resultFixture.origin!, threadUrl: "t3-thread://v1/thread-123" } };
+    fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
+      ? response(result(item)) : response({ item }));
+    route("item=agent-result");
+    render(<Inbox />);
+    await screen.findByRole("heading", { name: item.title });
+    expect(screen.getAllByText("hephaestus").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("ai-inbox").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("gpt-6-codex").length).toBeGreaterThan(0);
+    expect(screen.getByRole("link", { name: /Open source thread/ }).getAttribute("href"))
+      .toBe("t3-thread://v1/thread-123");
+
+    const httpItem = { ...item, origin: { ...item.origin!, threadUrl: "https://example.org/thread/123" } };
+    fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
+      ? response(result(httpItem)) : response({ item: httpItem }));
+    act(() => route(""));
+    act(() => route("item=agent-result"));
+    await waitFor(() => expect(screen.getByRole("link", { name: /Open source thread/ }).getAttribute("href"))
+      .toBe("https://example.org/thread/123"));
+
+    for (const threadUrl of ["javascript:alert(1)", "file:///etc/passwd", "t3-thread://v1/thread-123?run=1", "t3-thread://other/thread-123"]) {
+      const invalid = { ...item, origin: { ...item.origin!, threadUrl } };
+      fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
+        ? response(result(invalid)) : response({ item: invalid }));
+      act(() => route(""));
+      act(() => route("item=agent-result"));
+      await screen.findByRole("heading", { name: item.title });
+      await waitFor(() => expect(screen.queryByRole("link", { name: /Open source thread/ })).toBeNull());
+    }
+  });
+  it("renders an agent result without inventing origin metadata", async () => {
+    const item = { ...resultFixture, resultType: null, origin: null };
+    fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
+      ? response(result(item)) : response({ item }));
+    route("item=agent-result");
+    render(<Inbox />);
+    await screen.findByRole("heading", { name: item.title });
+    expect(screen.getAllByText("Agent result").length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText("Result origin")).toBeNull();
+    expect(screen.queryByRole("link", { name: /Open source thread/ })).toBeNull();
+  });
+  it("keeps result audio loaded while opening another item", async () => {
+    let paused = true;
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async () => { paused = false; });
+    vi.spyOn(HTMLMediaElement.prototype, "paused", "get").mockImplementation(() => paused);
+    const other = { ...fixture, id: "other-item", title: "Another item" };
+    fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
+      ? response({ ...result(resultFixture), items: [resultFixture, other], total: 2 })
+      : response({ item: String(url).includes("other-item") ? other : resultFixture }));
+    render(<Inbox />);
+    fireEvent.click(await screen.findByRole("button", { name: /Implemented cache invalidation/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Play Implemented cache invalidation" }));
+    await screen.findByRole("button", { name: "Pause audio" });
+    const player = screen.getByLabelText("Inbox audio") as HTMLAudioElement;
+    expect(player.getAttribute("src")).toBe("/api/items/agent-result/audio");
+    fireEvent.click(screen.getByRole("button", { name: /Another item/ }));
+    await screen.findByRole("heading", { name: "Another item" });
+    expect(screen.getByLabelText("Inbox audio")).toBe(player);
+    expect(player.getAttribute("src")).toBe("/api/items/agent-result/audio");
+    expect(play).toHaveBeenCalledTimes(1);
   });
   it("rolls back a failed optimistic PATCH and refetches the list", async () => {
     navigation.url = "item=test-item";

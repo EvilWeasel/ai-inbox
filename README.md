@@ -1,6 +1,6 @@
 # AI Inbox
 
-A self-hosted inbox for source-linked AI briefings and alerts. Read or listen,
+A self-hosted inbox for source-linked AI briefings, alerts and finished agent results. Read or listen,
 keep your reading state across devices, search previous reports and archive
 items without losing them. Built for one owner on a private network.
 
@@ -19,7 +19,8 @@ bun run dev
 
 Set `INBOX_DATA_DIR` to a private directory outside the checkout to retain data.
 Use the local ingestion CLI to populate it with actual reports. There is no
-production demo feed or remote ingestion endpoint. API contracts are documented
+production demo feed. Authenticated final-result delivery is documented in
+`docs/agent-results.md`. API contracts are documented
 in `docs/implementation-contract.md`.
 
 ```sh

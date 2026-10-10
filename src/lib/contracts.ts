@@ -1,9 +1,21 @@
 import { z } from 'zod';
 
 export const sourceSchema = z.object({ title: z.string().max(1000), url: z.string().url().max(4096).refine(v => /^https?:\/\//i.test(v), 'HTTP(S) URL required') }).strict();
-export const kindSchema = z.enum(['briefing', 'alert']);
+export const kindSchema = z.enum(['briefing', 'alert', 'result']);
+export const resultTypeSchema = z.enum(['research','implementation','report']);
+export const originSchema = z.object({
+  host: z.string().trim().min(1).max(255), project: z.string().max(500).optional(),
+  threadId: z.string().max(500).optional(), runId: z.string().max(500).optional(),
+  model: z.string().max(500).optional(), threadUrl: z.string().url().max(4096).refine(v => {
+    const url = new URL(v);
+    if (url.username || url.password) return false;
+    if (url.protocol === 'https:' || url.protocol === 'http:') return Boolean(url.hostname);
+    return url.protocol === 't3-thread:' && url.hostname === 'v1' && !url.port && !url.search && !url.hash && /^\/[A-Za-z0-9_-]+$/.test(url.pathname);
+  }, 'HTTP(S) or a T3 thread link required').optional(),
+}).strict();
 export const itemSchema = z.object({
   id: z.string(), title: z.string(), kind: kindSchema,
+  resultType: resultTypeSchema.nullable(), origin: originSchema.nullable(),
   edition: z.enum(['morning', 'evening']).nullable(), publishedAt: z.string(),
   body: z.string(), summary: z.string(), sources: z.array(sourceSchema),
   audioAvailable: z.boolean(), audioDuration: z.number().nullable(),
@@ -25,3 +37,14 @@ export const ingestSchema = z.object({
   provenance: z.record(z.string(), z.unknown()).default({}),
 }).strict();
 export type IngestItem = z.infer<typeof ingestSchema>;
+
+export const resultMetadataSchema = z.object({
+  deliveryId: z.string().trim().min(1).max(500),
+  title: z.string().trim().min(1).max(2000), body: z.string().min(1).max(2_000_000),
+  summary: z.string().max(4000).optional(), sources: z.array(sourceSchema).max(500).optional(),
+  tags: z.array(z.string().max(200)).max(100).optional(),
+  resultType: resultTypeSchema, origin: originSchema,
+  publishedAt: z.string().datetime({offset:true}), phase: z.literal('final'),
+  audioDuration: z.number().finite().nonnegative().optional(),
+}).strict();
+export type ResultMetadata = z.infer<typeof resultMetadataSchema>;

@@ -1,7 +1,9 @@
 import { sqliteTable, text, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 export const items = sqliteTable('items', {
   id: text('id').primaryKey(), externalId: text('external_id').notNull(),
-  title: text('title').notNull(), kind: text('kind', { enum: ['briefing','alert'] }).notNull(),
+  title: text('title').notNull(), kind: text('kind', { enum: ['briefing','alert','result'] }).notNull(),
+  resultType: text('result_type', { enum: ['research','implementation','report'] }),
+  origin: text('origin', { mode:'json' }).$type<{host:string;project?:string;threadId?:string;runId?:string;model?:string;threadUrl?:string}>(),
   edition: text('edition', { enum: ['morning','evening'] }), publishedAt: text('published_at').notNull(),
   body: text('body').notNull(), summary: text('summary').notNull(),
   sources: text('sources', { mode: 'json' }).$type<{title:string;url:string}[]>().notNull(),

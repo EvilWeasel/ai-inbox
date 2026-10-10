@@ -8,7 +8,7 @@ import { items } from './schema';
 export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
 type Row = typeof items.$inferSelect;
 export function publicItem(row: Row): InboxItem {
-  return { id:row.id,title:row.title,kind:row.kind,edition:row.edition,publishedAt:row.publishedAt,
+  return { id:row.id,title:row.title,kind:row.kind,resultType:row.resultType,origin:row.origin,edition:row.edition,publishedAt:row.publishedAt,
     body:row.body,summary:row.summary,sources:row.sources,tags:row.tags,audioAvailable:!!row.audioFile,
     audioDuration:row.audioDuration,readAt:row.readAt,archivedAt:row.archivedAt };
 }
