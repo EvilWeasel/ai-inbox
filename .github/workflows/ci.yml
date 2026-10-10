@@ -14,9 +14,9 @@ jobs:
     timeout-minutes: 20
     env:
       NEXT_TELEMETRY_DISABLED: '1'
-      INBOX_DATA_DIR: ${{ runner.temp }}/ai-inbox-data
     steps:
       - uses: actions/checkout@v4
+      - run: echo "INBOX_DATA_DIR=$RUNNER_TEMP/ai-inbox-data" >> "$GITHUB_ENV"
       - run: for script in scripts/deploy*.sh; do bash -n "$script"; done
       - uses: actions/setup-node@v4
         with:
