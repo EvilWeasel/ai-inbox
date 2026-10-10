@@ -27,6 +27,7 @@ in `docs/implementation-contract.md`.
 bun run typecheck
 bun run test
 bun run build
+bun run test:shutdown
 ```
 
 ## Private operation

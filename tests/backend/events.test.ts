@@ -63,6 +63,7 @@ test('SSE baseline, heartbeat, abort/cancel cleanup and reconnect resync without
   const abort = new AbortController();
   const response = inboxEventResponse(new Request('https://inbox.example/api/events', { signal: abort.signal }), hub);
   assert.equal(response.headers.get('x-accel-buffering'), 'no');
+  assert.equal(response.headers.get('connection'), 'close');
   assert.match(response.headers.get('cache-control')!, /no-transform/);
   const reader = response.body!.getReader();
   const decode = (bytes: Uint8Array | undefined) => new TextDecoder().decode(bytes);

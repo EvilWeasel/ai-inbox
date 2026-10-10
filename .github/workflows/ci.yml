@@ -29,3 +29,4 @@ jobs:
       - run: bun run test:backend
       - run: bun run test:frontend
       - run: bun run build
+      - run: bun run test:shutdown

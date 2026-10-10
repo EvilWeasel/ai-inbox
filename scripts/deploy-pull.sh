@@ -33,6 +33,7 @@ git --git-dir="$repo" archive "$revision" | tar -x -C "$stage"
   "$BUN_BIN" run test:backend
   "$BUN_BIN" run test:frontend
   "$BUN_BIN" run build
+  "$BUN_BIN" run test:shutdown
 )
 [[ -f "$stage/.next/BUILD_ID" && -f "$stage/node_modules/next/dist/bin/next" ]] || { echo 'Missing Next production output' >&2; exit 1; }
 release="$DEPLOY_ROOT/releases/$revision"

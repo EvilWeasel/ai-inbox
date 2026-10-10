@@ -10,7 +10,7 @@ data are private to that user. No GitHub credentials or webhook are needed.
 ## Deployment model
 
 GitHub-hosted CI runs frozen Bun installation, typecheck, tests and production
-build on pushes to `main` and pull requests. It uses Node 24 and Bun 1.4.3, temporary
+build, then a real production-process shutdown test on pushes to `main` and pull requests. It uses Node 24 and Bun 1.4.3, temporary
 data, read-only repository permission and no deployment secrets. Protect `main`
 with review and the `verify` check. Do not register a self-hosted GitHub runner.
 
@@ -47,7 +47,7 @@ runs. Avoid manual database changes while deployment is in progress.
 ## Install and activate after parent integration
 
 Prerequisites: integrated app with committed Bun lockfile and scripts named
-`typecheck`, `test:backend`, `test:frontend`, `build`; public GitHub `main`; Node 24; Bun 1.4.3; existing
+`typecheck`, `test:backend`, `test:frontend`, `build`, `test:shutdown`; public GitHub `main`; Node 24; Bun 1.4.3; existing
 NetBird connection and its IPv4 address; user systemd, git, curl, flock, tar,
 Python 3 and iproute2. Install the runtimes separately if absent; these scripts
 do not install packages or alter accounts/network services. The existing user

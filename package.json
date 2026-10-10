@@ -10,7 +10,8 @@
     "test:frontend": "vitest run src/components",
     "test:backend": "tsx --test tests/backend/*.test.ts",
     "import": "tsx scripts/import.ts",
-    "test": "bun run test:backend && bun run test:frontend"
+    "test": "bun run test:backend && bun run test:frontend",
+    "test:shutdown": "tsx --test tests/integration/shutdown.test.ts"
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.3.3",

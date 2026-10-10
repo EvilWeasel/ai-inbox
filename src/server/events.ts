@@ -162,6 +162,10 @@ export function inboxEventResponse(request: Request, hub: InboxEventHub) {
   });
   return new Response(body, { headers: {
     'Content-Type': 'text/event-stream; charset=utf-8',
+    // Next starts server.close() before our later-registered SIGTERM hook
+    // closes the stream. Avoid leaving the ended SSE socket to the HTTP
+    // keep-alive timeout after that response completes.
+    'Connection': 'close',
     'Cache-Control': 'private, no-store, no-transform',
     'X-Accel-Buffering': 'no',
     'X-Content-Type-Options': 'nosniff',
