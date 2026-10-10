@@ -10,13 +10,18 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-import stat
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+_PRIVATE_FILES_SPEC = importlib.util.spec_from_file_location(
+    "ai_inbox_private_files", Path(__file__).with_name("private-files.py"))
+if _PRIVATE_FILES_SPEC is None or _PRIVATE_FILES_SPEC.loader is None:
+    raise RuntimeError("private file policy helper is unavailable")
+private_files = importlib.util.module_from_spec(_PRIVATE_FILES_SPEC)
+_PRIVATE_FILES_SPEC.loader.exec_module(private_files)
 
 MAX_SNAPSHOT = 5 * 1024 * 1024
 MAX_METADATA = 2_000_000
@@ -31,11 +36,10 @@ class BridgeError(ValueError):
 
 
 def private_file(value: str | Path) -> Path:
-    path = Path(value).expanduser()
-    info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
-        raise BridgeError("private configuration and token files must be regular mode-0600 files")
-    return path
+    try:
+        return private_files.assert_private_file(value)
+    except private_files.PrivateFileError as exc:
+        raise BridgeError("private configuration and token files must be regular private files") from exc
 
 
 def read_json_file(path: str | Path, limit: int = MAX_METADATA) -> dict:
@@ -90,7 +94,10 @@ def canonical_root(value: str) -> Path:
     root = Path(value).expanduser()
     if not root.is_absolute():
         raise BridgeError("audio roots must be absolute paths")
-    check_no_symlink_components(root)
+    try:
+        private_files.assert_directory_no_reparse(root)
+    except private_files.PrivateFileError as exc:
+        raise BridgeError("audio roots must be existing real directories") from exc
     resolved = root.resolve(strict=True)
     if not resolved.is_dir():
         raise BridgeError("audio roots must be directories")
@@ -98,15 +105,10 @@ def canonical_root(value: str) -> Path:
 
 
 def check_no_symlink_components(path: Path) -> None:
-    current = Path(path.anchor)
-    for part in path.parts[1:]:
-        current = current / part
-        try:
-            info = current.lstat()
-        except FileNotFoundError as exc:
-            raise BridgeError("path does not exist") from exc
-        if stat.S_ISLNK(info.st_mode):
-            raise BridgeError("symlink paths are not allowed")
+    try:
+        private_files._check_no_reparse_components(path)
+    except private_files.PrivateFileError as exc:
+        raise BridgeError("reparse-point paths are not allowed") from exc
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -182,20 +184,22 @@ def outbox_path(config: dict) -> Path:
     path = Path(config["outboxDir"]).expanduser()
     if not path.is_absolute():
         raise BridgeError("outboxDir must be an absolute path")
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    check_no_symlink_components(path)
-    if path.is_symlink() or not path.is_dir():
-        raise BridgeError("outbox must be a real private directory")
-    path.chmod(0o700)
-    return path.resolve(strict=True)
+    try:
+        return private_files.ensure_private_directory(path)
+    except private_files.PrivateFileError as exc:
+        raise BridgeError("outbox must be a private directory") from exc
 
 
 def connect_db(config: dict) -> sqlite3.Connection:
     path = outbox_path(config) / "outbox.sqlite3"
+    try:
+        private_files.ensure_private_sqlite_database(path)
+    except private_files.PrivateFileError as exc:
+        raise BridgeError("private outbox database is unavailable") from exc
     db = sqlite3.connect(path, timeout=10)
     db.row_factory = sqlite3.Row
-    os.chmod(path, 0o600)
     db.execute("PRAGMA journal_mode=WAL")
+    private_files.secure_sqlite_artifacts(path)
     db.execute("PRAGMA synchronous=FULL")
     db.execute("""CREATE TABLE IF NOT EXISTS deliveries (
         stage_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, run_id TEXT NOT NULL,
@@ -205,7 +209,12 @@ def connect_db(config: dict) -> sqlite3.Connection:
         created_at REAL NOT NULL, updated_at REAL NOT NULL
     )""")
     db.execute("CREATE INDEX IF NOT EXISTS deliveries_pending ON deliveries(state,next_attempt,created_at)")
+    private_files.secure_sqlite_artifacts(path)
     return db
+
+
+def secure_db_artifacts(config: dict) -> None:
+    private_files.secure_sqlite_artifacts(Path(config["outboxDir"]) / "outbox.sqlite3")
 
 
 def validate_audio(source: str | Path, roots: list[Path]) -> Path:
@@ -214,8 +223,10 @@ def validate_audio(source: str | Path, roots: list[Path]) -> Path:
         raise BridgeError("audio path must be absolute")
     check_no_symlink_components(candidate)
     resolved = candidate.resolve(strict=True)
-    if not resolved.is_file():
-        raise BridgeError("audio must be a regular file")
+    try:
+        private_files.assert_regular_file_no_reparse(candidate)
+    except private_files.PrivateFileError as exc:
+        raise BridgeError("audio must be a regular file without reparse-point components") from exc
     if not any(resolved.is_relative_to(root) for root in roots):
         raise BridgeError("audio path is outside configured allowedAudioRoots")
     info = resolved.stat()
@@ -255,8 +266,10 @@ def stage(config_path: str | Path, thread_id: str, input_path: str | Path, audio
     delivery_id = "t3-" + hashlib.sha256(b"delivery\0" + identity).hexdigest()
     root = outbox_path(config)
     stage_dir = root / stage_id
-    stage_dir.mkdir(mode=0o700, exist_ok=True)
-    os.chmod(stage_dir, 0o700)
+    try:
+        private_files.ensure_private_directory(stage_dir)
+    except private_files.PrivateFileError as exc:
+        raise BridgeError("stage directory is not private") from exc
     fsync_dir(root)
     metadata_file = stage_dir / "result.json"
     audio_file = stage_dir / ("original-" + hashlib.sha256(audio.read_bytes()).hexdigest() + ".mp3") if audio else None
@@ -295,6 +308,7 @@ def stage(config_path: str | Path, thread_id: str, input_path: str | Path, audio
         db.rollback()
         raise
     finally:
+        secure_db_artifacts(config)
         db.close()
     return {"staged": True, "stageId": stage_id, "threadId": thread_id, "runId": run["id"], "deliveryId": delivery_id, "audio": bool(audio)}
 
@@ -306,14 +320,15 @@ def stage_receipt(row: sqlite3.Row) -> dict:
 
 
 def write_private(path: Path, data: bytes) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "wb") as target:
-        target.write(data)
-        target.flush()
-        os.fsync(target.fileno())
+    try:
+        private_files.create_private_file(path, data)
+    except private_files.PrivateFileError as exc:
+        raise BridgeError("private file creation failed") from exc
 
 
 def fsync_dir(path: Path) -> None:
+    if os.name == "nt":
+        return
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         os.fsync(fd)
@@ -322,26 +337,15 @@ def fsync_dir(path: Path) -> None:
 
 
 def copy_private(source: Path, target: Path) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(source, flags)
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_AUDIO:
-            raise BridgeError("audio changed or exceeds the 30 MiB limit")
-        out_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "rb", closefd=False) as src, os.fdopen(out_fd, "wb") as dst:
-            remaining = MAX_AUDIO + 1
-            while remaining:
-                block = src.read(min(1024 * 1024, remaining))
-                if not block: break
-                dst.write(block)
-                remaining -= len(block)
-            dst.flush()
-            os.fsync(dst.fileno())
-            if remaining == 0 and src.read(1):
-                raise BridgeError("audio exceeds the 30 MiB limit")
-    finally:
-        os.close(fd)
+        private_files.assert_regular_file_no_reparse(source)
+        with source.open("rb") as src:
+            data = src.read(MAX_AUDIO + 1)
+        if len(data) > MAX_AUDIO:
+            raise BridgeError("audio exceeds the 30 MiB limit")
+        private_files.create_private_file(target, data)
+    except private_files.PrivateFileError as exc:
+        raise BridgeError("audio path is not a regular file") from exc
 
 
 def find_final(projection: dict, run_id: str) -> tuple[dict | None, str]:
@@ -454,6 +458,7 @@ def deliver_row(config: dict, row: sqlite3.Row, force: bool = False) -> str:
                 db.execute("UPDATE deliveries SET state='blocked',diagnostic=?,updated_at=? WHERE stage_id=?",
                            ("T3 snapshot thread identity mismatch", time.time(), row["stage_id"]))
         finally:
+            secure_db_artifacts(config)
             db.close()
         return "blocked"
     _, reason = find_final(projection, row["run_id"])
@@ -482,6 +487,7 @@ def deliver_row(config: dict, row: sqlite3.Row, force: bool = False) -> str:
                        (json.dumps(receipt, separators=(",", ":")), time.time(), row["stage_id"]))
         return "delivered"
     finally:
+        secure_db_artifacts(config)
         db.close()
 
 
@@ -494,21 +500,16 @@ def defer_row(config: dict, row: sqlite3.Row, diagnostic: str) -> str:
             db.execute("UPDATE deliveries SET state='pending',attempts=?,next_attempt=?,diagnostic=?,updated_at=? WHERE stage_id=?",
                        (attempts, time.time() + delay, bounded_diagnostic(diagnostic), time.time(), row["stage_id"]))
     finally:
+        secure_db_artifacts(config)
         db.close()
     return "pending"
 
 
 def write_atomic_private(path: Path, data: bytes) -> None:
-    fd, name = tempfile.mkstemp(prefix=".delivery-", dir=path.parent)
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as target:
-            target.write(data)
-            target.flush()
-            os.fsync(target.fileno())
-        os.replace(name, path)
-    finally:
-        if os.path.exists(name): os.unlink(name)
+        private_files.atomic_write_private(path, data)
+    except private_files.PrivateFileError as exc:
+        raise BridgeError("private atomic write failed") from exc
 
 
 def load_sender():

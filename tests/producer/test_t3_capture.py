@@ -184,6 +184,7 @@ class T3CaptureTests(unittest.TestCase):
         outbox_db.execute("INSERT INTO deliveries VALUES('s','thread-staged','run-staged','delivery-1','delivered','{\"itemId\":\"inbox-1\"}',1)")
         outbox_db.commit()
         outbox_db.close()
+        (self.outbox / "outbox.sqlite3").chmod(0o600)
         fake = self.fake_bridge()
         with patch.object(capture, "bridge_module", return_value=fake):
             self.drain()
@@ -279,6 +280,7 @@ class T3CaptureTests(unittest.TestCase):
         outbox_db.execute("INSERT INTO deliveries VALUES('s','thread-later-stage','run-later-stage','delivery-pending','pending','{\"queued\":true}',1)")
         outbox_db.commit()
         outbox_db.close()
+        (self.outbox / "outbox.sqlite3").chmod(0o600)
         with patch.object(capture, "bridge_module", return_value=fake):
             self.drain()
         later = self.candidate_rows()[0]

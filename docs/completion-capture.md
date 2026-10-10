@@ -9,9 +9,11 @@ precedence when the exact thread/run already has an outbox receipt.
 
 ## Private configuration and activation
 
-Use a mode-0600 JSON config outside the checkout. Paths must be absolute; the
-capture directory is created mode 0700 and cannot contain symlink components.
-The existing bridge config must remain mode 0600 and supplies the local T3
+Use a private JSON config outside the checkout. On POSIX it must be mode 0600
+and the capture directory is mode 0700; on Windows the native helper checks
+owner and protected DACLs instead of relying on mode bits. Paths must be
+absolute and cannot contain symlink or reparse-point components. The existing
+bridge config must remain private and supplies the local T3
 origin/token and explicit-stage outbox path described in `t3-delivery.md`.
 
 ```json
@@ -109,7 +111,10 @@ text file while retaining the same candidate ID. The outbox state is copied as-i
 are checked for a later stage receipt as they recur during full sweeps.
 
 The capture SQLite database and final-text JSON files are private (0600 files,
-0700 directory). Snapshot responses retain the existing 5 MiB bridge cap; final
+0700 directory on POSIX, protected current-user ACLs on Windows). SQLite WAL,
+SHM and journal artifacts are validated and secured after creation. The T3
+metadata database is opened read-only and is not chmodded or ACL-modified.
+Snapshot responses retain the existing 5 MiB bridge cap; final
 text is capped at 1,000,000 UTF-8 bytes. The adapter stores no raw exception
 text, titles, token values, or arbitrary artifact contents. Retries only recover
 missing snapshots or completion-gate state; they never publish. Validation here

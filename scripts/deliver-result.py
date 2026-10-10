@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Deliver an explicit final result to a privately configured inbox producer API."""
 import argparse
+import importlib.util
 import json
-import os
 from pathlib import Path
-import stat
 import sys
 import urllib.error
 import urllib.parse
@@ -14,13 +13,19 @@ import uuid
 MAX_METADATA = 2_000_000
 MAX_AUDIO = 30 * 1024 * 1024
 
+_PRIVATE_FILES_SPEC = importlib.util.spec_from_file_location(
+    "ai_inbox_private_files_sender", Path(__file__).with_name("private-files.py"))
+if _PRIVATE_FILES_SPEC is None or _PRIVATE_FILES_SPEC.loader is None:
+    raise RuntimeError("private file policy helper is unavailable")
+private_files = importlib.util.module_from_spec(_PRIVATE_FILES_SPEC)
+_PRIVATE_FILES_SPEC.loader.exec_module(private_files)
+
 
 def private_file(path):
-    path = Path(path).expanduser()
-    info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
-        raise ValueError("configuration and token files must be private regular files")
-    return path
+    try:
+        return private_files.assert_private_file(path)
+    except private_files.PrivateFileError as exc:
+        raise ValueError("configuration and token files must be private regular files") from exc
 
 
 def deliver(config_path, input_path, audio_path=None):
@@ -33,8 +38,12 @@ def deliver(config_path, input_path, audio_path=None):
     if not token or any(ch.isspace() for ch in token):
         raise ValueError("invalid producer token file")
     if input_path != "-":
-        path = Path(input_path)
-        if not path.is_file() or path.stat().st_size > MAX_METADATA:
+        path = Path(input_path).expanduser().absolute()
+        try:
+            private_files.assert_regular_file_no_reparse(path)
+        except private_files.PrivateFileError as exc:
+            raise ValueError("result metadata must be a regular file without reparse points") from exc
+        if path.stat().st_size > MAX_METADATA:
             raise ValueError("result metadata is missing or exceeds the size limit")
         with path.open("rb") as source:
             raw = source.read(MAX_METADATA + 1)
@@ -57,8 +66,12 @@ def deliver(config_path, input_path, audio_path=None):
         raise ValueError("result metadata exceeds the size limit")
     content_type = "application/json"
     if audio_path:
-        path = Path(audio_path)
-        if not path.is_file() or path.stat().st_size > MAX_AUDIO:
+        path = Path(audio_path).expanduser().absolute()
+        try:
+            private_files.assert_regular_file_no_reparse(path)
+        except private_files.PrivateFileError as exc:
+            raise ValueError("audio must be a regular file without reparse points") from exc
+        if path.stat().st_size > MAX_AUDIO:
             raise ValueError("audio is missing or exceeds the size limit")
         with path.open("rb") as source:
             audio = source.read(MAX_AUDIO + 1)

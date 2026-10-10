@@ -7,13 +7,17 @@ from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
 import re
 import sqlite3
-import stat
 import sys
-import tempfile
+
+_PRIVATE_FILES_SPEC = importlib.util.spec_from_file_location(
+    "ai_inbox_private_files_capture", Path(__file__).with_name("private-files.py"))
+if _PRIVATE_FILES_SPEC is None or _PRIVATE_FILES_SPEC.loader is None:
+    raise RuntimeError("private file policy helper is unavailable")
+private_files = importlib.util.module_from_spec(_PRIVATE_FILES_SPEC)
+_PRIVATE_FILES_SPEC.loader.exec_module(private_files)
 
 MAX_CONFIG = 64 * 1024
 MAX_FINAL_TEXT = 1_000_000
@@ -30,36 +34,27 @@ class CaptureError(ValueError):
 
 
 def private_file(value: str | Path, label: str = "private file") -> Path:
-    path = Path(value).expanduser()
-    info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
-        raise CaptureError(f"{label} must be a regular mode-0600 file")
-    return path
+    try:
+        return private_files.assert_private_file(value)
+    except private_files.PrivateFileError as exc:
+        raise CaptureError(f"{label} must be a regular private file") from exc
 
 
 def secure_dir(value: str | Path) -> Path:
     path = Path(value).expanduser()
     if not path.is_absolute():
         raise CaptureError("captureDir must be an absolute path")
-    check_no_symlinks(path)
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    check_no_symlinks(path)
-    if not path.is_dir():
-        raise CaptureError("captureDir must be a directory")
-    os.chmod(path, 0o700)
-    return path.resolve(strict=True)
+    try:
+        return private_files.ensure_private_directory(path)
+    except private_files.PrivateFileError as exc:
+        raise CaptureError("captureDir must be a private directory") from exc
 
 
 def check_no_symlinks(path: Path) -> None:
-    current = Path(path.anchor)
-    for part in path.parts[1:]:
-        current /= part
-        try:
-            info = current.lstat()
-        except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(info.st_mode):
-            raise CaptureError("symlink paths are not allowed")
+    try:
+        private_files._check_no_reparse_components(path)
+    except private_files.PrivateFileError as exc:
+        raise CaptureError("reparse-point paths are not allowed") from exc
 
 
 def load_config(path: str | Path) -> dict:
@@ -75,10 +70,10 @@ def load_config(path: str | Path) -> dict:
     database = Path(config["t3DatabaseFile"]).expanduser()
     if not database.is_absolute():
         raise CaptureError("t3DatabaseFile must be absolute")
-    check_no_symlinks(database)
-    info = database.lstat()
-    if not stat.S_ISREG(info.st_mode):
-        raise CaptureError("t3DatabaseFile must be a regular file")
+    try:
+        private_files.assert_regular_file_no_reparse(database)
+    except private_files.PrivateFileError as exc:
+        raise CaptureError("t3DatabaseFile must be a regular file without reparse points") from exc
     config["t3DatabaseFile"] = str(database)
     config["bridgeConfigFile"] = str(private_file(config["bridgeConfigFile"], "bridge config"))
     config["captureDir"] = str(secure_dir(config["captureDir"]))
@@ -87,14 +82,14 @@ def load_config(path: str | Path) -> dict:
 
 def connect_capture(config: dict) -> sqlite3.Connection:
     path = Path(config["captureDir"]) / "capture.sqlite3"
-    if path.exists() or path.is_symlink():
-        info = path.lstat()
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-            raise CaptureError("capture database must be a regular private file")
+    try:
+        private_files.ensure_private_sqlite_database(path)
+    except private_files.PrivateFileError as exc:
+        raise CaptureError("capture database must be a regular private file") from exc
     db = sqlite3.connect(path, timeout=10)
     db.row_factory = sqlite3.Row
-    os.chmod(path, 0o600)
     db.execute("PRAGMA journal_mode=WAL")
+    private_files.secure_sqlite_artifacts(path)
     db.execute("PRAGMA synchronous=FULL")
     db.execute("""CREATE TABLE IF NOT EXISTS capture_state (
         singleton INTEGER PRIMARY KEY CHECK(singleton=1), activation_epoch TEXT NOT NULL,
@@ -113,11 +108,21 @@ def connect_capture(config: dict) -> sqlite3.Connection:
         if name not in candidate_columns:
             db.execute(f"ALTER TABLE candidates ADD COLUMN {name} {declaration}")
     db.execute("CREATE INDEX IF NOT EXISTS candidates_status ON candidates(status,completed_at)")
+    private_files.secure_sqlite_artifacts(path)
     return db
 
 
+def secure_capture_artifacts(config: dict) -> None:
+    private_files.secure_sqlite_artifacts(Path(config["captureDir"]) / "capture.sqlite3")
+
+
 def metadata_connection(path: str | Path) -> sqlite3.Connection:
-    uri = Path(path).resolve(strict=True).as_uri() + "?mode=ro"
+    source = Path(path).expanduser()
+    try:
+        private_files.assert_regular_file_no_reparse(source)
+    except private_files.PrivateFileError as exc:
+        raise CaptureError("T3 metadata database path is not a regular local file") from exc
+    uri = source.resolve(strict=True).as_uri() + "?mode=ro"
     db = sqlite3.connect(uri, uri=True, timeout=5)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA query_only=ON")
@@ -166,6 +171,7 @@ def init(config: dict) -> dict:
         db.rollback()
         raise
     finally:
+        secure_capture_artifacts(config)
         db.close()
 
 
@@ -183,12 +189,20 @@ def staged_receipt(bridge_config: dict, thread_id: str, run_id: str) -> dict | N
     root = Path(bridge_config["outboxDir"]).expanduser()
     if not root.is_absolute():
         raise CaptureError("bridge outbox path is invalid")
-    check_no_symlinks(root)
+    if not root.exists() and not root.is_symlink():
+        return None
+    try:
+        private_files.assert_private_directory(root)
+    except private_files.PrivateFileError as exc:
+        raise CaptureError("bridge outbox is not a private directory") from exc
     db_path = root / "outbox.sqlite3"
     if not db_path.exists():
         return None
-    if db_path.is_symlink() or not db_path.is_file():
-        raise CaptureError("outbox receipt store is unavailable")
+    try:
+        private_files.assert_private_file(db_path)
+    except private_files.PrivateFileError as exc:
+        raise CaptureError("outbox receipt store is unavailable") from exc
+    private_files.secure_sqlite_artifacts(db_path)
     uri = db_path.resolve(strict=True).as_uri() + "?mode=ro"
     db = sqlite3.connect(uri, uri=True, timeout=5)
     db.row_factory = sqlite3.Row
@@ -221,17 +235,10 @@ def candidate_id(thread_id: str, run_id: str) -> str:
 def atomic_private(path: Path, content: bytes) -> None:
     if len(content) > MAX_CAPTURE_FILE:
         raise CaptureError("candidate receipt exceeds the size limit")
-    fd, temp_name = tempfile.mkstemp(prefix=".capture-", dir=path.parent)
     try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as target:
-            target.write(content)
-            target.flush()
-            os.fsync(target.fileno())
-        os.replace(temp_name, path)
-    finally:
-        if os.path.exists(temp_name):
-            os.unlink(temp_name)
+        private_files.atomic_write_private(path, content)
+    except private_files.PrivateFileError as exc:
+        raise CaptureError("private candidate write failed") from exc
 
 
 def source_refs(message: dict, final_text: str) -> list[dict | str]:
@@ -271,7 +278,16 @@ def save_candidate(db: sqlite3.Connection, config: dict, item: dict) -> None:
             db.execute("UPDATE candidates SET candidate_id=?,completed_at=?,status='staged',reason=?,receipt_json=?,text_file=NULL,updated_at=?,next_attempt_at=NULL,diagnostic_class=NULL WHERE thread_id=? AND run_id=?",
                        (cid, item["completedAt"], item["reason"], receipt_json, now, item["threadId"], item["runId"]))
             if existing["text_file"]:
-                Path(existing["text_file"]).unlink(missing_ok=True)
+                expected_text = Path(config["captureDir"]) / (cid + ".json")
+                stored_text = Path(existing["text_file"])
+                if stored_text != expected_text:
+                    raise CaptureError("stored candidate path does not match its private identity")
+                if stored_text.exists() or stored_text.is_symlink():
+                    try:
+                        private_files.assert_private_file(stored_text)
+                    except private_files.PrivateFileError as exc:
+                        raise CaptureError("stored candidate file is not private") from exc
+                    stored_text.unlink()
         elif existing["text_file"] is None and text_file is not None:
             db.execute("UPDATE candidates SET text_file=?,status=?,reason=?,updated_at=?,next_attempt_at=NULL,diagnostic_class=NULL WHERE thread_id=? AND run_id=?",
                        (text_file, item["status"], item["reason"], now, item["threadId"], item["runId"]))
@@ -436,6 +452,7 @@ def process(config: dict, limit: int = DEFAULT_BATCH) -> dict:
         db.rollback()
         raise
     finally:
+        secure_capture_artifacts(config)
         db.close()
         meta.close()
 

@@ -12,8 +12,12 @@ file into the private outbox.
 
 ## Private configuration
 
-Create a mode-0600 JSON file outside the checkout. Keep both token files in the
-host's existing private credential storage. `t3TokenFile` must contain a
+Create a private JSON file outside the checkout. On POSIX, configuration and
+token files remain mode 0600 and the outbox directory is mode 0700. On Windows,
+the producer checks owner and protected DACLs with the native helper described
+in [windows-producer.md](windows-producer.md); Windows mode bits are not used
+as a privacy check. Keep both token files in the host's existing private
+credential storage. `t3TokenFile` must contain a
 read-scoped T3 bearer token; `producerConfigFile` points to the existing private
 configuration consumed by `scripts/deliver-result.py`.
 
@@ -31,7 +35,9 @@ configuration consumed by `scripts/deliver-result.py`.
 Use the actual configured origin locally. Plain HTTP is accepted only for a
 loopback address; HTTPS is accepted for other origins. Redirects are refused.
 The bridge reads the T3 token from its private file and never prints it or copies
-it into the outbox. The outbox directory and staged files are mode 0700 and 0600.
+it into the outbox. The outbox directory and staged files use owner-only access
+on each platform. SQLite's main database is privately precreated, and its WAL,
+SHM and rollback journal artifacts are validated and secured after SQLite opens.
 Audio paths must be absolute, regular, free of symlink components, inside one of
 the configured roots and at most 30 MiB. Audio is explicitly selected with
 `--audio`; the bridge never chooses a newest or suggested MP3.
