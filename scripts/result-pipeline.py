@@ -25,6 +25,8 @@ MAX_CAPTURE = 1_250_000
 MAX_DECISION = 64 * 1024
 MAX_METADATA = 2_000_000
 MAX_SPOKEN = 250_000
+MAX_ORIGINAL_AUDIO_BYTES = 30 * 1024 * 1024
+MAX_ORIGINAL_AUDIO_REFS = 32
 MAX_BATCH = 50
 MAX_TOTAL_BATCH = MAX_BATCH * 2
 MAX_LEASE = 3600
@@ -91,6 +93,13 @@ def private_path(value: Any, label: str) -> Path:
     if not path.is_absolute():
         raise PipelineError(f"{label} must be absolute")
     return path
+
+
+def _assert_current_private_file(path: str | Path) -> Path:
+    target = private_files.assert_private_file(path)
+    if os.name != "nt" and target.lstat().st_uid != os.geteuid():
+        raise private_files.PrivateFileError("private file is owned by another user")
+    return target
 
 
 def load_config(path: str | Path) -> dict:
@@ -344,11 +353,11 @@ def _validate_decision(raw: bytes, captured: dict, row: dict, allowed_roots: lis
             raise PipelineError("selected original audio hash is invalid")
         path = private_path(original["path"], "original audio path")
         try:
-            private_files.assert_regular_file_no_reparse(path)
+            _assert_current_private_file(path)
             resolved = path.resolve(strict=True)
             if not any(resolved == root or root in resolved.parents for root in allowed_roots):
                 raise PipelineError("selected original audio is outside allowed roots")
-            raw_audio = read_private(path, 30 * 1024 * 1024)
+            raw_audio = read_private(path, MAX_ORIGINAL_AUDIO_BYTES)
         except (OSError, private_files.PrivateFileError) as exc:
             raise PipelineError("selected original audio is unavailable") from exc
         try:
@@ -361,6 +370,125 @@ def _validate_decision(raw: bytes, captured: dict, row: dict, allowed_roots: lis
     return {"decision": kind, "title": title.strip(), "resultType": result_type,
             "spokenText": spoken, "originalAudioPath": original_path,
             "originalAudioSha256": original_hash}
+
+
+_MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]\r\n]{0,500}\]\(\s*(<[^>]{1,4096}>|[^\s)]{1,4096})")
+_HTML_AUDIO_LINK_RE = re.compile(r"""(?i)\b(?:src|href)\s*=\s*(?:"([^"]{1,4096})"|'([^']{1,4096})'|([^\s>]{1,4096}))""")
+_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/]|/)(?:[^\s<>\"'`()\[\]{}]{1,4095})")
+
+
+def _audio_reference_path(value: str) -> Path | None:
+    """Return a safe decoded absolute MP3 path, or None for a non-MP3 reference.
+
+    This only parses explicitly supplied values; it never searches a directory or
+    resolves URLs. A suspicious MP3-shaped reference is rejected by the caller.
+    """
+    candidate = value.strip()
+    if candidate.startswith("<") and candidate.endswith(">"):
+        candidate = candidate[1:-1]
+    if not candidate or len(candidate) > 4096:
+        return None
+    # A URL or URI that ends in .mp3 is an explicit reference, but is never a
+    # local recording candidate.
+    parsed = urllib.parse.urlsplit(candidate)
+    windows_drive = bool(re.match(r"^[A-Za-z]:[\\/]", candidate))
+    if not windows_drive and parsed.scheme and re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", parsed.scheme):
+        decoded_url_path = urllib.parse.unquote(parsed.path, errors="strict")
+        if decoded_url_path.lower().endswith(".mp3"):
+            raise PipelineError("explicit MP3 reference is not a local path")
+        return None
+    decoded = urllib.parse.unquote(candidate, errors="strict")
+    if not decoded.lower().endswith(".mp3"):
+        return None
+    if not Path(decoded).is_absolute() or "\x00" in decoded:
+        raise PipelineError("explicit MP3 reference is not an absolute local path")
+    if any(part in {".", ".."} for part in Path(decoded).parts):
+        raise PipelineError("explicit MP3 reference contains path traversal")
+    return Path(decoded)
+
+
+def _discover_original_audio(captured: dict, allowed_roots: list[Path]) -> dict | None:
+    """Prove a single original MP3 named by this exact captured final result.
+
+    The bounded parser considers Markdown targets, plain absolute paths, and
+    captured sourceRefs' url/href/path values. It does not inspect history or
+    directories. One unique, private, in-root file is required when MP3 refs
+    appear; ambiguity or a missing/unsafe target fails closed.
+    """
+    text = captured.get("text")
+    source_refs = captured.get("sourceRefs")
+    if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_CAPTURE:
+        raise PipelineError("captured final text is invalid for audio discovery")
+    if not isinstance(source_refs, list) or len(source_refs) > 500:
+        raise PipelineError("captured source references are invalid for audio discovery")
+
+    values: list[str] = []
+
+    def add_reference(value: str) -> None:
+        candidate = value.strip().removeprefix("<").removesuffix(">")
+        parsed = urllib.parse.urlsplit(candidate)
+        target = urllib.parse.unquote(parsed.path if parsed.scheme else candidate, errors="strict")
+        if target.lower().endswith(".mp3"):
+            values.append(value)
+            if len(values) > MAX_ORIGINAL_AUDIO_REFS:
+                raise PipelineError("too many explicit audio references")
+    # Markdown links/images are explicit references, including non-local URLs
+    # that must cause review rather than silently falling through to synthesis.
+    for match in _MARKDOWN_LINK_RE.finditer(text):
+        add_reference(match.group(1))
+    for match in _HTML_AUDIO_LINK_RE.finditer(text):
+        add_reference(next((group for group in match.groups() if group is not None), ""))
+    # Support prose that directly names an absolute private MP3 path. Markdown
+    # target duplicates are collapsed after path validation below.
+    for match in _ABSOLUTE_PATH_RE.finditer(text):
+        token = match.group(0).rstrip(".,;:!?")
+        if token.lower().endswith(".mp3"):
+            values.append(token)
+            if len(values) > MAX_ORIGINAL_AUDIO_REFS:
+                raise PipelineError("too many explicit audio references")
+    for item in source_refs:
+        candidates = [item] if isinstance(item, str) else (
+            [item.get(key) for key in ("url", "href", "path") if isinstance(item.get(key), str)]
+            if isinstance(item, dict) else [])
+        for candidate in candidates:
+            if len(candidate) <= 4096:
+                parsed = urllib.parse.urlsplit(candidate)
+                path_part = urllib.parse.unquote(parsed.path if parsed.scheme else candidate, errors="strict")
+                if path_part.lower().endswith(".mp3"):
+                    values.append(candidate)
+                    if len(values) > MAX_ORIGINAL_AUDIO_REFS:
+                        raise PipelineError("too many explicit audio references")
+
+    unique: dict[str, Path] = {}
+    for value in values:
+        path = _audio_reference_path(value)
+        if path is None:
+            continue
+        # Lexical normalization deduplicates the same explicit path repeated in
+        # a Markdown link, raw text, or sourceRefs without following symlinks.
+        key = os.path.normpath(str(path))
+        unique[key] = path
+    if not unique:
+        return None
+    if len(unique) != 1:
+        raise PipelineError("captured result has conflicting explicit MP3 references")
+
+    path = next(iter(unique.values()))
+    try:
+        _assert_current_private_file(path)
+        resolved = path.resolve(strict=True)
+        if not any(resolved == root or root in resolved.parents for root in allowed_roots):
+            raise PipelineError("captured MP3 reference is outside allowed roots")
+        raw_audio = read_private(path, MAX_ORIGINAL_AUDIO_BYTES)
+        audio_module = load_audio_module()
+        digest, _size = audio_module._valid_mp3(path)
+    except PipelineError:
+        raise
+    except Exception as exc:
+        raise PipelineError("captured MP3 reference is unavailable or not private") from exc
+    if sha(raw_audio) != digest:
+        raise PipelineError("captured MP3 changed while it was being validated")
+    return {"path": str(path), "sha256": digest}
 
 
 def _thread_url(thread_id: str) -> str | None:
@@ -484,6 +612,27 @@ class ResultPipeline:
             raise PipelineError("decision request exceeds the size limit")
         raw_decision = self.decision_runner(self.config["decisionHelperArgv"],
                     request_raw, self.config["decisionHelperTimeoutSeconds"])
+        # The ordinary classifier has no original-audio selection field. Discover
+        # only a recording explicitly named by this captured final result, and
+        # attach the trusted path/hash before the strict decision validator runs.
+        try:
+            decision_object = json.loads(raw_decision)
+        except (UnicodeError, json.JSONDecodeError):
+            decision_object = None
+        if isinstance(decision_object, dict) and decision_object.get("decision") == "meaningful":
+            discovered = _discover_original_audio(captured, allowed_roots)
+            selected = decision_object.get("originalAudio")
+            if discovered is not None:
+                if selected is not None:
+                    if (not isinstance(selected, dict) or set(selected) != {"path", "sha256"}
+                            or not isinstance(selected.get("path"), str)
+                            or not Path(selected["path"]).is_absolute()
+                            or os.path.normpath(selected["path"]) != os.path.normpath(discovered["path"])):
+                        raise PipelineError("classifier audio selection conflicts with captured MP3 reference")
+                else:
+                    decision_object["originalAudio"] = discovered
+                raw_decision = json.dumps(decision_object, ensure_ascii=False,
+                                          separators=(",", ":")).encode("utf-8")
         decision = _validate_decision(raw_decision, captured, row, allowed_roots)
         decision["sources"] = refs
         return decision, raw_decision

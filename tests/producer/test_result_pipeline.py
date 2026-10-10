@@ -277,6 +277,156 @@ class ResultPipelineTests(unittest.TestCase):
         self.assertEqual(self.deliveries[pipeline_module.stable_delivery_id("thread-1", "run-7")]["audio"], original.read_bytes())
         self.assertEqual(self.store.calls, 0)
 
+    def test_captured_markdown_mp3_discovery_wins_over_spoken_synthesis(self):
+        original = self.audio_root / "captured-original.mp3"
+        original.write_bytes(b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x64" + b"\x00" * 413)
+        original.chmod(0o600)
+        self.context["text"] = f"Finished answer.\n\n[Anhören]({original})" + "\n" + "\n".join(f"[Source {i}](https://example.invalid/source/{i})" for i in range(80))
+        self.captured["text"] = self.context["text"]
+        self.decision = self._meaningful_decision()
+        class Client:
+            calls = 0
+            def request_audio(self, *_args): self.calls += 1; raise AssertionError("must attach original, not synthesize")
+        client = Client()
+        pipeline = self._central_mode_pipeline(client)
+        result = pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "audio-delivered")
+        self.assertEqual(client.calls, 0)
+        self.assertEqual([call[1] for call in self.sender_calls], [None, str(original)])
+        self.assertEqual(Path(original).stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.deliveries[pipeline_module.stable_delivery_id("thread-1", "run-7")]["audio"],
+                         original.read_bytes())
+
+    def test_windows_drive_audio_paths_are_parsed_using_native_path_semantics(self):
+        from pathlib import PureWindowsPath
+        from unittest.mock import patch
+        path = r"C:\Users\personal\audio\answer.mp3"
+        with patch.object(pipeline_module, "Path", PureWindowsPath):
+            self.assertEqual(pipeline_module._audio_reference_path(path), PureWindowsPath(path))
+            self.assertEqual(pipeline_module._audio_reference_path("C:/Users/personal/audio/answer.mp3"), PureWindowsPath(path))
+        self.assertEqual(pipeline_module._ABSOLUTE_PATH_RE.search(path).group(0), path)
+
+    def test_conflicting_explicit_mp3_references_hold_for_review(self):
+        first = self.audio_root / "first.mp3"
+        second = self.audio_root / "second.mp3"
+        payload = b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x64" + b"\x00" * 413
+        for path in (first, second):
+            path.write_bytes(payload)
+            path.chmod(0o600)
+        self.context["text"] = f"[first]({first}) and [second]({second})"
+        self.captured["text"] = self.context["text"]
+        self.decision = self._meaningful_decision()
+        result = self.pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "review-needed")
+        self.assertEqual(self.sender_calls, [])
+        self.assertEqual(self.store.calls, 0)
+
+    def test_missing_explicit_mp3_reference_holds_for_review(self):
+        self.context["text"] = f"[Anhören]({self.audio_root / 'missing.mp3'})"
+        self.captured["text"] = self.context["text"]
+        self.decision = self._meaningful_decision()
+        result = self.pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "review-needed")
+        self.assertEqual(self.sender_calls, [])
+        self.assertEqual(self.store.calls, 0)
+
+    def test_symlinked_mp3_reference_holds_for_review(self):
+        outside = self.private / "outside.mp3"
+        outside.write_bytes(b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x64" + b"\x00" * 413)
+        outside.chmod(0o600)
+        linked = self.audio_root / "linked.mp3"
+        linked.symlink_to(outside)
+        self.context["text"] = f"![audio]({linked})"
+        self.captured["text"] = self.context["text"]
+        self.decision = self._meaningful_decision()
+        result = self.pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "review-needed")
+        self.assertEqual(self.sender_calls, [])
+        self.assertEqual(self.store.calls, 0)
+
+    def test_trusted_helper_selection_must_match_captured_audio_reference(self):
+        referenced = self.audio_root / "referenced.mp3"
+        selected = self.audio_root / "selected.mp3"
+        payload = b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x64" + b"\x00" * 413
+        for path in (referenced, selected):
+            path.write_bytes(payload)
+            path.chmod(0o600)
+        self.context["text"] = f"[Anhören]({referenced})"
+        self.captured["text"] = self.context["text"]
+        self.decision = self._meaningful_decision(originalAudio={
+            "path": str(selected), "sha256": hashlib.sha256(selected.read_bytes()).hexdigest()})
+        result = self.pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "review-needed")
+        self.assertEqual(self.sender_calls, [])
+        self.assertEqual(self.store.calls, 0)
+
+    def test_insecure_explicit_mp3_file_holds_for_review(self):
+        original = self.audio_root / "insecure.mp3"
+        original.write_bytes(b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x64" + b"\x00" * 413)
+        original.chmod(0o644)
+        self.context["text"] = f"[Anhören]({original})"
+        self.captured["text"] = self.context["text"]
+        self.decision = self._meaningful_decision()
+        result = self.pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "review-needed")
+        self.assertEqual(self.sender_calls, [])
+        self.assertEqual(self.store.calls, 0)
+
+    def test_non_audio_body_path_does_not_select_recording(self):
+        self.context["text"] = "The report is stored at /tmp/report.txt."
+        self.captured["text"] = self.context["text"]
+        self.decision = self._meaningful_decision()
+        result = self.pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "audio-pending")
+        self.assertEqual(self.store.calls, 1)
+        self.assertEqual(self.sender_calls[0][1], None)
+
+    def test_network_mp3_reference_is_not_fetched_or_synthesized(self):
+        self.context["text"] = "[listen](https://media.example.invalid/original.mp3)"
+        self.captured["text"] = self.context["text"]
+        self.decision = self._meaningful_decision()
+        class Client:
+            calls = 0
+            def request_audio(self, *_args): self.calls += 1; raise AssertionError("network MP3 is not fetched")
+        client = Client()
+        pipeline = self._central_mode_pipeline(client)
+        result = pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "review-needed")
+        self.assertEqual(client.calls, 0)
+        self.assertEqual(self.sender_calls, [])
+
+    def test_source_ref_path_is_decoded_and_verified_as_original(self):
+        original = self.audio_root / "source recording.mp3"
+        original.write_bytes(b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x64" + b"\x00" * 413)
+        original.chmod(0o600)
+        self.captured["sourceRefs"] = [{"title": "Original recording",
+                                        "path": str(original).replace(" ", "%20")}]
+        self.decision = self._meaningful_decision()
+        class Client:
+            calls = 0
+            def request_audio(self, *_args): self.calls += 1; raise AssertionError("must attach source-ref original")
+        client = Client()
+        pipeline = self._central_mode_pipeline(client)
+        result = pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "audio-delivered")
+        self.assertEqual(client.calls, 0)
+        self.assertEqual([call[1] for call in self.sender_calls], [None, str(original)])
+        self.assertEqual(self.store.calls, 0)
+
+    def test_html_network_audio_reference_is_not_fetched(self):
+        self.context["text"] = '<audio src="https://media.example.invalid/original.mp3"></audio>'
+        self.captured["text"] = self.context["text"]
+        self.decision = self._meaningful_decision()
+        class Client:
+            calls = 0
+            def request_audio(self, *_args): self.calls += 1; raise AssertionError("HTML URL is not fetched")
+        client = Client()
+        pipeline = self._central_mode_pipeline(client)
+        result = pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "review-needed")
+        self.assertEqual(client.calls, 0)
+        self.assertEqual(self.sender_calls, [])
+
     def test_central_ready_existing_completes_same_item_without_audio_resend(self):
         class Client:
             def request_audio(_self, _config, _metadata, _spoken, item):

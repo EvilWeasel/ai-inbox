@@ -61,6 +61,22 @@ and its bytes must match the given hash. The helper cannot set origin, identity,
 project, model, delivery ID, URLs, source references, endpoint or commands.
 Unknown response fields fail closed.
 
+For a meaningful decision, before decision validation the coordinator also
+checks only the captured final text and that final message's captured
+`sourceRefs` for explicit local MP3 references. It recognizes bounded Markdown
+and HTML link targets, plain absolute MP3 paths, and `url`, `href`, or `path`
+values in source-reference entries. One unique referenced recording is
+accepted only after absolute-path, no-reparse, allowed-root, current-owner
+private-file, 30 MiB, MPEG-frame, and content-hash checks. The computed hash becomes
+the trusted `originalAudio` selection; the classifier does not inspect files or
+choose the path. A trusted custom helper's own `originalAudio` selection is
+preserved and must agree with any captured reference. Multiple, conflicting,
+missing, network, URI, traversal, symlink, insecure, or invalid explicit MP3
+references go to `review-needed`, preventing audio generation for that result.
+Unrelated non-MP3 paths and results with no explicit MP3 reference follow the
+normal audio flow. This check does not search files, prior results, archives,
+thread history, or any uncaptured messages, and it never fetches a URL.
+
 ## Candidate processing and identity
 
 Run one bounded candidate pass explicitly:
