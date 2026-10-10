@@ -123,8 +123,9 @@ retained snapshots are the recovery source; automated recovery is best effort.
 ## Backup, retention and security limits
 
 Completed pre-switch snapshots are retained after healthy deployment: newest
-seven by default. Current and previous releases are always preserved, plus the
-newest five candidates. Failed data trees are excluded from automatic deletion
+seven by default. Current and previous releases, and every code version referenced by a retained
+backup, are always preserved, plus the newest five candidates. Retained backup
+references can therefore increase the number of retained releases. Failed data trees are excluded from automatic deletion
 and must be inspected/deleted manually. Failed builds are removed. Backups are
 full local copies, not encrypted off-host disaster recovery; the operator should
 copy verified stopped snapshots to their existing private encrypted backup
@@ -152,3 +153,17 @@ operate only on the three dedicated `ai-inbox` application/deployment units.
 
 See [local ingestion](ingestion.md) for the separate artifact synchronization
 timer. It uses the same deployment lock and does not run research or models.
+
+On hosts combining Tailscale and another overlay, anti-spoofing rules may reject
+local requests to the host's own overlay address. Verify actual routing and
+firewall counters. A host-specific exception, if needed, must apply only to the
+loopback interface, exact own address and app port, with a separately documented
+reversible host unit. Never relax overlay or public-interface rules globally.
+
+## Local bootstrap when repository creation is pending
+
+A manually invoked `deploy-pull.sh --local-checkout /absolute/clean/checkout` can
+bootstrap a committed local `main` through the same release gates and rollback.
+It requires a clean Git checkout and does not change the configured remote. The
+automatic timer continues to fetch only the public remote and should be enabled
+only after the repository is published. This option does not bypass tests.

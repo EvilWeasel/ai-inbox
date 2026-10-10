@@ -13,13 +13,10 @@
     "test": "bun run test:backend && bun run test:frontend"
   },
   "dependencies": {
-    "@radix-ui/react-dialog": "^1.2.0",
-    "@radix-ui/react-slot": "^1.4.0",
     "@tailwindcss/postcss": "^4.3.3",
     "better-sqlite3": "^13.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "cn": "^0.4.0",
     "drizzle-orm": "^0.45.4",
     "lucide-react": "^1.55.0",
     "next": "^16.4.0",
@@ -49,5 +46,9 @@
   "trustedDependencies": [
     "esbuild",
     "sharp"
-  ]
+  ],
+  "packageManager": "bun@1.4.3",
+  "engines": {
+    "node": ">=22"
+  }
 }

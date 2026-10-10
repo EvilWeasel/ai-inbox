@@ -68,7 +68,7 @@ for name in REPO_URL DEPLOY_ROOT INBOX_DATA_DIR BIND_ADDRESS NETBIRD_INTERFACE P
 done
 chmod 600 "$config_tmp"
 mv -f "$config_tmp" "$config_dir/runtime.conf"
-for script in deploy-common.sh deploy-start.sh deploy-pull.sh; do
+for script in deploy-common.sh deploy-start.sh deploy-pull.sh retention.py; do
   install -m 700 "$source_dir/scripts/$script" "$script_dir/$script"
 done
 for unit in ai-inbox.service ai-inbox-deploy.service ai-inbox-deploy.timer; do

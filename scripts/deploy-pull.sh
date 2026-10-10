@@ -7,7 +7,13 @@ flock -n 9 || { echo 'Another deployment holds the lock'; exit 0; }
 check_binding
 repo="$DEPLOY_ROOT/source.git"
 if [[ ! -d "$repo" ]]; then git init --bare "$repo" >/dev/null; fi
-git --git-dir="$repo" fetch --quiet --no-tags "$REPO_URL" +refs/heads/main:refs/heads/deploy-main
+if (($#)); then
+  [[ $# == 2 && "$1" == --local-checkout && "$2" == /* ]] || { echo 'Usage: deploy-pull.sh [--local-checkout ABSOLUTE_CHECKOUT]' >&2; exit 2; }
+  [[ -d "$2/.git" && -z $(git -C "$2" status --porcelain) ]] || { echo 'Local bootstrap requires a clean committed checkout' >&2; exit 2; }
+  git --git-dir="$repo" fetch --quiet --no-tags "$2" +refs/heads/main:refs/heads/deploy-main
+else
+  git --git-dir="$repo" fetch --quiet --no-tags "$REPO_URL" +refs/heads/main:refs/heads/deploy-main
+fi
 revision=$(git --git-dir="$repo" rev-parse refs/heads/deploy-main)
 old=$(readlink "$DEPLOY_ROOT/current" || true)
 [[ "$old" != "$DEPLOY_ROOT/releases/$revision" ]] || { echo 'Already running current main'; exit 0; }
@@ -89,14 +95,6 @@ done
 success=1
 # Keep current, previous and the newest configured number. Only completed backups
 # count toward retention; failed data snapshots require explicit operator review.
-python3 - "$DEPLOY_ROOT" "$RELEASE_KEEP" "$BACKUP_KEEP" "$old" <<'PY'
-import pathlib, shutil, sys
-root = pathlib.Path(sys.argv[1])
-protected = {pathlib.Path(sys.argv[4]), (root / 'current').resolve()}
-releases = sorted((p for p in (root / 'releases').iterdir() if p.is_dir() and not p.is_symlink() and len(p.name) == 40 and all(c in '0123456789abcdef' for c in p.name)), key=lambda p: p.stat().st_mtime, reverse=True)
-for p in releases[int(sys.argv[2]):]:
-    if p not in protected: shutil.rmtree(p)
-backups = sorted((p for p in (root / 'backups').iterdir() if p.is_dir() and not p.is_symlink() and (p / 'previous-release').is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
-for p in backups[int(sys.argv[3]):]: shutil.rmtree(p)
-PY
+python3 "$(dirname "${BASH_SOURCE[0]}")/retention.py" "$DEPLOY_ROOT" "$RELEASE_KEEP" "$BACKUP_KEEP" "$old"
+
 echo "Deployed revision $revision"

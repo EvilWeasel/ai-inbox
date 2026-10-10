@@ -42,8 +42,14 @@ function sources(body: string, urls: string[] = []) {
   for (const url of urls) if (/^https?:\/\//i.test(url) && !result.has(url)) result.set(url,new URL(url).hostname);
   return [...result].map(([url,title]) => ({title,url}));
 }
-function heading(body: string) { return body.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? body.split('\n').find(x=>x.trim())?.trim() ?? ''; }
-function summary(body: string) { return body.split(/\n\s*\n/).find(p=>p.trim() && !p.trim().startsWith('#'))?.trim().slice(0,600) ?? ''; }
+function plainText(value: string) {
+  return value.replace(/!?\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/<[^>]*>/g,'').replace(/[*_`~]/g,'').replace(/\s+/g,' ').trim();
+}
+function heading(body: string) { return plainText(body.match(/^#{1,6}\s+(.+)$/m)?.[1] ?? body.split('\n').find(x=>x.trim()) ?? ''); }
+function summary(body: string) {
+  const title = heading(body);
+  return plainText(body.split(/\n\s*\n/).find(p=>p.trim() && !p.trim().startsWith('#') && plainText(p)!==title) ?? '').slice(0,600);
+}
 function historicalReference(value: string) { return value.replaceAll('\\','/').includes('/.t3/scratch/'); }
 export function copyMedia(db: InboxDatabase, source: string) {
   if (basename(source).toLowerCase().slice(-4) !== '.mp3') throw new Error('MP3 media required');

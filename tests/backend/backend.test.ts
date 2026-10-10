@@ -7,7 +7,7 @@ import { openDatabase, type InboxDatabase } from '../../src/server/db';
 import { ingestSchema, querySchema } from '../../src/lib/contracts';
 import { detail, listItems, patchItem, upsertBatch, ApiError } from '../../src/server/items';
 import { audioResponse, parseRange } from '../../src/server/audio';
-import { assertSameOrigin, readPatch, failure, queryInput } from '../../src/server/http';
+import { assertSameOrigin, assertTrustedHost, readPatch, failure, queryInput } from '../../src/server/http';
 import { collectArtifacts, importRecords, ingestExplicit, copyMedia } from '../../src/server/importer';
 
 let root: string; let db: InboxDatabase;
@@ -141,4 +141,21 @@ test('morning and evening directories import as distinct editions and preserve s
   importRecords(db,collectArtifacts(fixture.project).records.filter(r=>r.item.kind==='briefing'));
   assert.equal(listItems(db,{view:'all',kind:'briefing'}).total,2);
   assert.equal(detail(db,stable).readAt,state.readAt);assert.equal(detail(db,stable).archivedAt,state.archivedAt);
+});
+
+test('imported titles and summaries are readable plain text while original body is preserved',()=>{
+  const fixture=sourceFixture();const body='**Daily AI briefing**\n\nNew **model** with [original source](https://example.org/new).';
+  writeFileSync(join(fixture.briefing,'day','briefing.md'),body);
+  const record=collectArtifacts(fixture.project).records.find(r=>r.item.kind==='briefing')!;
+  assert.equal(record.item.title,'Daily AI briefing');assert.equal(record.item.summary,'New model with original source.');assert.equal(record.item.body,body);
+});
+
+test('production host restriction rejects rebinding while configured origin supports Next URL normalization',()=>{
+  const old=process.env.INBOX_ORIGIN;process.env.INBOX_ORIGIN='http://192.0.2.1:3400';
+  try {
+    const allowed=new Request('http://localhost:3400/api/items',{headers:{host:'192.0.2.1:3400',origin:'http://192.0.2.1:3400'}});
+    assert.doesNotThrow(()=>assertTrustedHost(allowed));assert.doesNotThrow(()=>assertSameOrigin(allowed));
+    assert.throws(()=>assertTrustedHost(new Request('http://localhost:3400/api/items',{headers:{host:'attacker.example'}})));
+    assert.throws(()=>assertSameOrigin(new Request('http://localhost:3400/api/items',{headers:{host:'192.0.2.1:3400',origin:'https://attacker.example'}})));
+  } finally {if(old===undefined)delete process.env.INBOX_ORIGIN;else process.env.INBOX_ORIGIN=old;}
 });

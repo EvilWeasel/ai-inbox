@@ -62,6 +62,12 @@ function response(value: unknown, status = 200) {
 }
 const fetchMock = vi.fn<typeof fetch>();
 beforeEach(() => {
+  localStorage.clear();
+  document.documentElement.classList.remove("dark");
+  vi.stubGlobal("matchMedia", vi.fn().mockImplementation((query: string) => ({
+    matches: query.includes("max-width"), media: query,
+    addEventListener: vi.fn(), removeEventListener: vi.fn(),
+  })));
   navigation.url = "";
   navigation.push.mockReset().mockImplementation((url) => route(url));
   fetchMock.mockReset();
@@ -69,6 +75,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 function api(item = fixture) {
@@ -105,6 +112,9 @@ describe("inbox API interactions", () => {
     expect((audio as HTMLAudioElement).playbackRate).toBe(1.5);
     act(() => route(""));
     await screen.findByRole("heading", { name: "Select an item to read" });
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: /Test release/ }),
+    );
   });
   it("persists search and kind filters in the query state", async () => {
     api();
@@ -213,20 +223,135 @@ describe("inbox API interactions", () => {
     ).toEqual([{ archived: true }, { archived: false }]);
   });
   it("shows retry after an API error, then an honest empty state", async () => {
-    fetchMock
-      .mockResolvedValueOnce(response({}, 503))
-      .mockResolvedValue(
-        response({
-          items: [],
-          counts: { inbox: 0, unread: 0, archive: 0 },
-          total: 0,
-          nextCursor: null,
-        }),
-      );
+    fetchMock.mockResolvedValueOnce(response({}, 503)).mockResolvedValue(
+      response({
+        items: [],
+        counts: { inbox: 0, unread: 0, archive: 0 },
+        total: 0,
+        nextCursor: null,
+      }),
+    );
     render(<Inbox />);
     await screen.findByRole("alert");
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await screen.findByText("Your inbox is empty");
     expect(screen.queryByText("Test release")).toBeNull();
   });
+});
+
+
+describe("theme, shortcuts and background updates", () => {
+  it("persists a selected theme across remounts and follows system changes", async () => {
+    api();
+    const listeners = new Set<() => void>();
+    let dark = false;
+    vi.stubGlobal("matchMedia", () => ({ get matches() { return dark; },
+      addEventListener: (_: string, callback: () => void) => listeners.add(callback),
+      removeEventListener: (_: string, callback: () => void) => listeners.delete(callback),
+    }));
+    const first = render(<Inbox />);
+    fireEvent.change(screen.getByLabelText("Theme"), { target: { value: "dark" } });
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    first.unmount();
+    render(<Inbox />);
+    expect((screen.getByLabelText("Theme") as HTMLSelectElement).value).toBe("dark");
+    fireEvent.change(screen.getByLabelText("Theme"), { target: { value: "light" } });
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    fireEvent.change(screen.getByLabelText("Theme"), { target: { value: "system" } });
+    act(() => { dark = true; listeners.forEach(callback => callback()); });
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    await screen.findByRole("button", { name: /Test release/ });
+  });
+  it("focuses search with both shortcuts, clears it with Escape and returns mobile detail", async () => {
+    api(); render(<Inbox />);
+    await screen.findByRole("button", { name: /Test release/ });
+    const search = screen.getByRole("searchbox");
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(document.activeElement).toBe(search);
+    fireEvent.change(search, { target: { value: "release" } });
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect((search as HTMLInputElement).value).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: /Test release/ }));
+    await screen.findByRole("heading", { name: "Test release" });
+    fireEvent.keyDown(screen.getByLabelText("Playback speed"), { key: "Escape" });
+    expect(navigation.url).toContain("item=test-item");
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(navigation.url).not.toContain("item=");
+    expect(document.activeElement).toBe(search);
+    fireEvent.click(screen.getByRole("button", { name: /Test release/ }));
+    await screen.findByRole("heading", { name: "Test release" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(navigation.url).not.toContain("item=");
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(document.activeElement).toBe(search);
+  });
+  it("refreshes loaded pages without a loading flash or replacing selected detail", async () => {
+    navigation.url = "item=test-item";
+    const older = { ...fixture, id: "older", title: "Older release" };
+    const newest = { ...fixture, id: "new", title: "New arrival" };
+    let updated = false;
+    fetchMock.mockImplementation(async url => {
+      if (!String(url).startsWith("/api/items?")) return response({ item: fixture });
+      const paged = String(url).includes("cursor=");
+      return response({ items: paged ? [older] : updated ? [newest, fixture] : [fixture],
+        counts: { inbox: updated ? 3 : 2, unread: updated ? 3 : 2, archive: 0 },
+        total: updated ? 3 : 2, nextCursor: paged ? null : "next" });
+    });
+    render(<Inbox />);
+    await screen.findByRole("heading", { name: "Test release" });
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    await screen.findByRole("button", { name: /Older release/ });
+    const heading = screen.getByRole("heading", { name: "Test release" });
+    updated = true;
+    fireEvent.focus(window);
+    expect(screen.queryByLabelText("Loading items")).toBeNull();
+    await screen.findByRole("button", { name: /New arrival/ });
+    expect(screen.getByRole("button", { name: /Older release/ })).toBeTruthy();
+    expect(screen.getByLabelText("3 inbox items")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Test release" })).toBe(heading);
+  });
+  it("rejects a stale refresh arriving during a mutation and pauses checks while hidden", async () => {
+    navigation.url = "item=test-item";
+    let finishRefresh: (value: Response) => void = () => {};
+    let refresh = false;
+    let read = false;
+    fetchMock.mockImplementation(async (url, options) => {
+      if (options?.method === "PATCH") { read = true; return response({ item: { ...fixture, readAt: "2026-10-10T13:00:00Z" } }); }
+      if (!String(url).startsWith("/api/items?")) return response({ item: fixture });
+      if (refresh && !read) return new Promise<Response>(resolve => { finishRefresh = resolve; });
+      return response(result({ ...fixture, readAt: read ? "2026-10-10T13:00:00Z" : null }));
+    });
+    render(<Inbox />);
+    await screen.findByRole("heading", { name: "Test release" });
+    await screen.findByLabelText("1 unread items");
+    refresh = true; fireEvent.focus(window);
+    fireEvent.click(screen.getByRole("button", { name: "Mark read" }));
+    await screen.findByLabelText("0 unread items");
+    await act(async () => finishRefresh(response(result())));
+    expect(screen.getByLabelText("0 unread items")).toBeTruthy();
+    const calls = fetchMock.mock.calls.length;
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    vi.useFakeTimers();
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    vi.useRealTimers(); vi.restoreAllMocks();
+  });
+});
+
+
+it("checks every minute only while visible and refreshes on return", async () => {
+  api();
+  vi.useFakeTimers();
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  await act(async () => { render(<Inbox />); });
+  const initial = fetchMock.mock.calls.length;
+  await act(async () => vi.advanceTimersByTime(60_000));
+  expect(fetchMock.mock.calls.length).toBe(initial + 1);
+  visibility.mockReturnValue("hidden");
+  await act(async () => vi.advanceTimersByTime(60_000));
+  expect(fetchMock.mock.calls.length).toBe(initial + 1);
+  visibility.mockReturnValue("visible");
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  expect(fetchMock.mock.calls.length).toBe(initial + 2);
+  visibility.mockRestore();
 });

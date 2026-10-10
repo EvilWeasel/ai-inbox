@@ -7,10 +7,18 @@ export function failure(error: unknown) {
   // No paths, SQL, environment values, or raw exception messages in HTTP responses.
   return json({error:'Service unavailable'},503);
 }
+export function assertTrustedHost(request: Request) {
+  const configured = process.env.INBOX_ORIGIN;
+  if (!configured) return;
+  const expected = new URL(configured);
+  const host = request.headers.get('host') ?? new URL(request.url).host;
+  if (host.toLowerCase() !== expected.host.toLowerCase()) throw new ApiError(403,'Host not allowed');
+}
 export function assertSameOrigin(request: Request) {
+  assertTrustedHost(request);
   const origin = request.headers.get('origin');
   const site = request.headers.get('sec-fetch-site');
-  if (origin !== new URL(request.url).origin || (site && site !== 'same-origin' && site !== 'none')) throw new ApiError(403,'Same-origin request required');
+  if (origin !== (process.env.INBOX_ORIGIN ?? new URL(request.url).origin) || (site && site !== 'same-origin' && site !== 'none')) throw new ApiError(403,'Same-origin request required');
 }
 export async function readPatch(request: Request) {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type')??'')) throw new ApiError(415,'JSON required');

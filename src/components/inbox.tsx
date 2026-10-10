@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useLayoutEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Archive,
@@ -66,6 +66,11 @@ function safeUrl(value: string) {
   } catch {
     return undefined;
   }
+}
+function readingBody(item: InboxItem) {
+  const parts = item.body.split(/\n\s*\n/);
+  const first = parts[0]?.replace(/^#{1,6}\s+/, "").replace(/[*_`~]/g, "").trim();
+  return first === item.title ? parts.slice(1).join("\n\n") : item.body;
 }
 function sourceLabel(item: InboxItem) {
   const source = item.sources[0];
@@ -139,6 +144,26 @@ export function Inbox() {
   const kind = rawKind === "briefing" || rawKind === "alert" ? rawKind : "";
   const selectedId = params.get("item");
   const [search, setSearch] = useState(q);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const focusSearchAfterNavigation = useRef(false);
+  const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("ai-inbox-theme");
+      if (saved === "light" || saved === "dark" || saved === "system") setTheme(saved);
+    } catch { /* Storage may be unavailable; system remains usable. */ }
+  }, []);
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => {
+      const dark = theme === "dark" || (theme === "system" && media.matches);
+      document.documentElement.classList.toggle("dark", dark);
+      document.documentElement.style.colorScheme = dark ? "dark" : "light";
+    };
+    apply();
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, [theme]);
   const [list, setList] = useState<ListResult | null>(null);
   const [detail, setDetail] = useState<InboxItem | null>(null);
   const [loading, setLoading] = useState(true);
@@ -147,10 +172,30 @@ export function Inbox() {
   const [detailError, setDetailError] = useState("");
   const [actionError, setActionError] = useState("");
   const [pending, setPending] = useState(false);
+  const actionFocus = useRef<{ id: string; button: HTMLButtonElement } | null>(
+    null,
+  );
   const [refresh, setRefresh] = useState(0);
   const [detailRefresh, setDetailRefresh] = useState(0);
   const [moreLoading, setMoreLoading] = useState(false);
   const [moreError, setMoreError] = useState("");
+  const [refreshError, setRefreshError] = useState("");
+  const loadedQuery = useRef("");
+  const loadedPages = useRef(1);
+  const refreshController = useRef<AbortController | null>(null);
+  const busy = useRef({ pending, moreLoading, loading });
+  busy.current = { pending, moreLoading, loading };
+  const listRef = useRef(list);
+  listRef.current = list;
+  const scrollAnchor = useRef<{ node: HTMLButtonElement; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const anchor = scrollAnchor.current;
+    if (anchor?.node.isConnected) {
+      const scroller = anchor.node.closest(".item-list");
+      if (scroller) scroller.scrollTop += anchor.node.getBoundingClientRect().top - anchor.top;
+    }
+    scrollAnchor.current = null;
+  }, [list]);
   const currentRoute = useRef({
     listQuery: "",
     selectedId: "" as string | null,
@@ -186,26 +231,94 @@ export function Inbox() {
   }, [selectedId]);
   useEffect(() => {
     const controller = new AbortController();
-    paginationRequest.current++;
-    setLoading(true);
+    refreshController.current = controller;
+    const quiet = loadedQuery.current === listQuery && !!listRef.current;
+    if (!quiet) {
+      loadedPages.current = 1;
+      paginationRequest.current++;
+      setLoading(true);
+      setMoreError("");
+      setMoreLoading(false);
+    }
     setListError("");
-    setMoreError("");
-    setMoreLoading(false);
-    request<ListResult>(`/api/items?${listQuery}`, {
-      signal: controller.signal,
-    })
-      .then((data) => {
-        setList(data);
-        setLoading(false);
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) {
-          setListError(error.message);
-          setLoading(false);
-        }
-      });
+    setRefreshError("");
+    const pages = loadedPages.current;
+    const lastId = listRef.current?.items.at(-1)?.id;
+    async function reload() {
+      let data = await request<ListResult>(`/api/items?${listQuery}`, { signal: controller.signal });
+      let fetchedPages = 1;
+      // Re-read loaded pages; one extra page accommodates newly inserted rows.
+      while (data.nextCursor && (fetchedPages < pages ||
+        (quiet && fetchedPages === pages && lastId && !data.items.some(item => item.id === lastId)))) {
+        const next = await request<ListResult>(`/api/items?${listQuery}&cursor=${encodeURIComponent(data.nextCursor)}`, { signal: controller.signal });
+        data = { ...next, items: [...data.items, ...next.items.filter(item => !data.items.some(old => old.id === item.id))] };
+        fetchedPages++;
+      }
+      if (controller.signal.aborted) return;
+      if (quiet) {
+        const scroller = document.getElementById("item-list");
+        const top = scroller?.getBoundingClientRect().top ?? 0;
+        const node = [...itemButtons.current.values()].find(button => button.getBoundingClientRect().bottom > top);
+        if (node && scroller && scroller.scrollTop > 0) scrollAnchor.current = { node, top: node.getBoundingClientRect().top };
+      }
+      loadedPages.current = fetchedPages;
+      loadedQuery.current = listQuery;
+      setList(data);
+      setLoading(false);
+    }
+    void reload().catch(error => {
+      if (controller.signal.aborted) return;
+      if (quiet) setRefreshError("Refresh failed. Your loaded items are still available.");
+      else { setListError(error.message); setLoading(false); }
+    });
     return () => controller.abort();
   }, [listQuery, refresh]);
+  useEffect(() => {
+    let lastCheck = 0;
+    const check = () => {
+      if (document.visibilityState !== "visible" || busy.current.pending || busy.current.moreLoading || busy.current.loading) return;
+      if (Date.now() - lastCheck < 1000) return;
+      lastCheck = Date.now();
+      setRefresh(n => n + 1);
+    };
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    const timer = window.setInterval(check, 60_000);
+    return () => {
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", check);
+      window.clearInterval(timer);
+    };
+  }, []);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        if (selectedId && window.matchMedia("(max-width: 640px)").matches) {
+          focusSearchAfterNavigation.current = true;
+          navigate({ item: null });
+        }
+        searchInput.current?.focus({ preventScroll: true });
+        searchInput.current?.select();
+        return;
+      }
+      if (event.key !== "Escape" || navOpen) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (target === searchInput.current) {
+        if (search || q) { event.preventDefault(); setSearch(""); navigate({ q: null, item: null }); }
+        return;
+      }
+      if (target?.closest("input, textarea, select, [contenteditable], [role='dialog']")) return;
+      if (selectedId && window.matchMedia("(max-width: 640px)").matches) {
+        event.preventDefault(); navigate({ item: null });
+      } else if (search || q) {
+        event.preventDefault(); setSearch(""); navigate({ q: null });
+      }
+    };
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, [navigate, selectedId, search, q, navOpen]);
   useEffect(() => {
     setDetail(null);
     setDetailError("");
@@ -220,6 +333,7 @@ export function Inbox() {
       { signal: controller.signal },
     )
       .then(({ item }) => {
+        if (controller.signal.aborted) return;
         setDetail(item);
         setDetailLoading(false);
       })
@@ -232,7 +346,11 @@ export function Inbox() {
     return () => controller.abort();
   }, [selectedId, detailRefresh]);
   useEffect(() => {
-    if (!selectedId && previousSelection.current)
+    if (!selectedId && focusSearchAfterNavigation.current) {
+      searchInput.current?.focus({ preventScroll: true });
+      searchInput.current?.select();
+      focusSearchAfterNavigation.current = false;
+    } else if (!selectedId && previousSelection.current)
       (
         itemButtons.current.get(previousSelection.current) ??
         listHeading.current
@@ -246,7 +364,9 @@ export function Inbox() {
 
   async function loadMore() {
     if (!list?.nextCursor || moreLoading) return;
+    refreshController.current?.abort();
     const token = ++paginationRequest.current;
+    busy.current.moreLoading = true;
     setMoreLoading(true);
     setMoreError("");
     try {
@@ -254,6 +374,7 @@ export function Inbox() {
         `/api/items?${listQuery}&cursor=${encodeURIComponent(list.nextCursor)}`,
       );
       if (token !== paginationRequest.current) return;
+      loadedPages.current++;
       setList((current) =>
         current
           ? {
@@ -274,8 +395,21 @@ export function Inbox() {
       if (token === paginationRequest.current) setMoreLoading(false);
     }
   }
-  async function mutate(patch: { read?: boolean; archived?: boolean }) {
+  useEffect(() => {
+    if (!pending && actionFocus.current) {
+      const { id, button } = actionFocus.current;
+      if (id === selectedId && button.isConnected)
+        button.focus({ preventScroll: true });
+      actionFocus.current = null;
+    }
+  }, [pending, selectedId]);
+
+  async function mutate(
+    patch: { read?: boolean; archived?: boolean },
+    trigger?: HTMLButtonElement,
+  ) {
     if (!detail || pending) return;
+    if (trigger) actionFocus.current = { id: detail.id, button: trigger };
     const mutationQuery = listQuery;
     const previous = detail;
     const previousList = list;
@@ -288,6 +422,10 @@ export function Inbox() {
         ? { archivedAt: patch.archived ? new Date().toISOString() : null }
         : {}),
     };
+    refreshController.current?.abort();
+    paginationRequest.current++;
+    setMoreLoading(false);
+    busy.current.pending = true;
     setPending(true);
     setActionError("");
     setDetail(optimistic);
@@ -386,6 +524,20 @@ export function Inbox() {
           </Button>
         ))}
       </nav>
+      <div className="theme-control">
+        <label>Theme
+          <select aria-label="Theme" value={theme} onChange={event => {
+            const value = event.target.value as typeof theme;
+            setTheme(value);
+            try { localStorage.setItem("ai-inbox-theme", value); } catch { /* Use the selected theme for this session. */ }
+          }}>
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <p>Ctrl/⌘ K search · Esc back / clear</p>
+      </div>
       <div className="sidebar-footer">
         <span className="status-dot" />
         Private inbox
@@ -441,7 +593,7 @@ export function Inbox() {
                 size="icon"
                 className="refresh-button"
                 aria-label="Refresh items"
-                disabled={loading}
+                disabled={loading || pending || moreLoading}
                 onClick={() => setRefresh((n) => n + 1)}
               >
                 <RefreshCw className={loading ? "spin" : ""} />
@@ -457,6 +609,9 @@ export function Inbox() {
             >
               <Search size={17} className="search-icon" />
               <Input
+                ref={searchInput}
+                aria-keyshortcuts="Control+k Meta+k"
+                aria-describedby="search-shortcuts"
                 type="search"
                 aria-label="Search items"
                 placeholder="Search your inbox"
@@ -487,6 +642,8 @@ export function Inbox() {
                 <ChevronRight />
               </Button>
             </form>
+            <span id="search-shortcuts" className="sr-only">Ctrl or Command K focuses search. Escape clears search; outside inputs, Escape returns to the list on mobile.</span>
+            {refreshError && <p className="pagination-error" role="status">{refreshError}</p>}
             <div className="filter-row">
               <label htmlFor="kind-filter">Show</label>
               <select
@@ -647,6 +804,8 @@ export function Inbox() {
                   variant="ghost"
                   size="sm"
                   className="back-button"
+                  aria-keyshortcuts="Escape"
+                  title="Back to list (Esc)"
                   onClick={() => navigate({ item: null })}
                 >
                   <ArrowLeft />
@@ -665,7 +824,9 @@ export function Inbox() {
                       variant="ghost"
                       size="sm"
                       disabled={pending}
-                      onClick={() => mutate({ read: !detail.readAt })}
+                      onClick={(event) =>
+                        mutate({ read: !detail.readAt }, event.currentTarget)
+                      }
                       aria-label={detail.readAt ? "Mark unread" : "Mark read"}
                     >
                       {detail.readAt ? <Mail /> : <MailOpen />}
@@ -675,7 +836,12 @@ export function Inbox() {
                       variant="ghost"
                       size="sm"
                       disabled={pending}
-                      onClick={() => mutate({ archived: !detail.archivedAt })}
+                      onClick={(event) =>
+                        mutate(
+                          { archived: !detail.archivedAt },
+                          event.currentTarget,
+                        )
+                      }
                       aria-label={
                         detail.archivedAt ? "Restore to inbox" : "Archive item"
                       }
@@ -760,9 +926,6 @@ export function Inbox() {
                         </div>
                       )}
                       <AudioPlayer key={detail.id} item={detail} />
-                      {detail.summary && (
-                        <p className="article-summary">{detail.summary}</p>
-                      )}
                       <div className="markdown">
                         <ReactMarkdown
                           remarkPlugins={[remarkGfm]}
@@ -783,7 +946,7 @@ export function Inbox() {
                             ),
                           }}
                         >
-                          {detail.body}
+                          {readingBody(detail)}
                         </ReactMarkdown>
                       </div>
                       {detail.tags.length > 0 && (
@@ -916,7 +1079,7 @@ function AudioPlayer({ item }: { item: InboxItem }) {
         <audio
           ref={audio}
           controls
-          preload="none"
+          preload="metadata"
           src={`/api/items/${encodeURIComponent(item.id)}/audio`}
           aria-label={`Listen to ${item.title}`}
           onError={() => setError(true)}
