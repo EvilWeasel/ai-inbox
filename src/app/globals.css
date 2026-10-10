@@ -1146,6 +1146,9 @@ h1 {
 select option { color: var(--foreground); background: var(--background); }
 
 /* The dock occupies a real grid row, so neither pane can scroll behind it. */
+.live-connection { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.live-connection > span { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.live-connection[data-state="connected"] > span { background: var(--inbox-focus); }
 .player-layout { height: 100dvh; display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
 .player-content { min-height: 0; min-width: 0; overflow: hidden; }
 .player-content .inbox-shell { height: 100%; min-height: 0; }

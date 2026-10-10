@@ -44,6 +44,11 @@ current recording and position while navigating, searching or opening another
 item. Choose Play on another recording to switch. The bottom player provides
 pause/resume, seeking, playback speed and a link back to the playing item.
 
+A same-origin server event stream updates the list, selected report and reading
+counts automatically after committed changes. Reconnection resynchronizes state;
+loaded content stays usable while the connection recovers. See
+[live updates](docs/live-updates.md) for the revision protocol and storage behavior.
+
 ## Extension direction
 
 The first release focuses on a durable news inbox. Future work can add an

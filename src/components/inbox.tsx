@@ -26,6 +26,7 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DetailPlayControl } from "@/components/audio-player";
+import { useInboxEvents } from "@/components/use-inbox-events";
 import { Badge } from "@/components/ui/badge";
 import {
   Sheet,
@@ -192,6 +193,12 @@ export function Inbox() {
   );
   const [refresh, setRefresh] = useState(0);
   const [detailRefresh, setDetailRefresh] = useState(0);
+  const [liveVersion, setLiveVersion] = useState(0);
+  const liveDirty = useRef(false);
+  const connectionStatus = useInboxEvents(useCallback(() => {
+    liveDirty.current = true;
+    setLiveVersion(version => version + 1);
+  }, []));
   const [moreLoading, setMoreLoading] = useState(false);
   const [moreError, setMoreError] = useState("");
   const [refreshError, setRefreshError] = useState("");
@@ -293,22 +300,13 @@ export function Inbox() {
     return () => controller.abort();
   }, [listQuery, refresh]);
   useEffect(() => {
-    let lastCheck = 0;
-    const check = () => {
-      if (document.visibilityState !== "visible" || busy.current.pending || busy.current.moreLoading || busy.current.loading) return;
-      if (Date.now() - lastCheck < 1000) return;
-      lastCheck = Date.now();
-      setRefresh(n => n + 1);
-    };
-    window.addEventListener("focus", check);
-    document.addEventListener("visibilitychange", check);
-    const timer = window.setInterval(check, 60_000);
-    return () => {
-      window.removeEventListener("focus", check);
-      document.removeEventListener("visibilitychange", check);
-      window.clearInterval(timer);
-    };
-  }, []);
+    // Retain invalidations during initial loading, pagination or a local write.
+    // The existing loaders abort stale reads and preserve loaded pages/scroll.
+    if (!liveDirty.current || busy.current.pending || busy.current.moreLoading || busy.current.loading) return;
+    liveDirty.current = false;
+    setRefresh(version => version + 1);
+    setDetailRefresh(version => version + 1);
+  }, [liveVersion, pending, moreLoading, loading]);
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) return;
@@ -620,16 +618,10 @@ export function Inbox() {
                       : `${list?.total ?? 0} ${list?.total === 1 ? "item" : "items"}${q ? " found" : ""}`}
                 </p>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="refresh-button"
-                aria-label="Refresh items"
-                disabled={loading || pending || moreLoading}
-                onClick={() => setRefresh((n) => n + 1)}
-              >
-                <RefreshCw className={loading ? "spin" : ""} />
-              </Button>
+              <span className="live-connection" data-state={connectionStatus} role="status" aria-live="polite">
+                <span aria-hidden="true" />
+                {connectionStatus === "connected" ? "Live" : connectionStatus === "reconnecting" ? "Reconnecting…" : "Live connection unavailable"}
+              </span>
             </div>
             <form
               className="search-form"

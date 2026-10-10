@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
     "typecheck": "tsc --noEmit",
-    "test:frontend": "vitest run src/components/inbox.test.tsx src/components/audio-player.test.tsx",
+    "test:frontend": "vitest run src/components",
     "test:backend": "tsx --test tests/backend/*.test.ts",
     "import": "tsx scripts/import.ts",
     "test": "bun run test:backend && bun run test:frontend"

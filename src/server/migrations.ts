@@ -32,4 +32,42 @@ export function migrate(sqlite: Database.Database) {
       INSERT INTO inbox_migrations(version) VALUES(1);
     `);
   }).immediate();
+  sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM inbox_migrations WHERE version=2').get()) return;
+    // Additive migration: old importers and releases also participate through triggers.
+    sqlite.exec(`
+      CREATE TABLE inbox_revision (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        revision INTEGER NOT NULL CHECK(typeof(revision)='integer' AND revision>=0)
+      );
+      INSERT INTO inbox_revision VALUES(1,0);
+      CREATE TRIGGER items_revision_insert AFTER INSERT ON items BEGIN
+        UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1;
+      END;
+      CREATE TRIGGER items_revision_delete AFTER DELETE ON items BEGIN
+        UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1;
+      END;
+      CREATE TRIGGER items_revision_update AFTER UPDATE ON items
+      WHEN
+        old.id IS NOT new.id
+        OR old.external_id IS NOT new.external_id
+        OR old.title IS NOT new.title
+        OR old.kind IS NOT new.kind
+        OR old.edition IS NOT new.edition
+        OR old.published_at IS NOT new.published_at
+        OR old.body IS NOT new.body
+        OR old.summary IS NOT new.summary
+        OR old.sources IS NOT new.sources
+        OR old.tags IS NOT new.tags
+        OR old.audio_file IS NOT new.audio_file
+        OR old.audio_duration IS NOT new.audio_duration
+        OR old.read_at IS NOT new.read_at
+        OR old.archived_at IS NOT new.archived_at
+        OR old.provenance IS NOT new.provenance
+      BEGIN
+        UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1;
+      END;
+      INSERT INTO inbox_migrations(version) VALUES(2);
+    `);
+  }).immediate();
 }

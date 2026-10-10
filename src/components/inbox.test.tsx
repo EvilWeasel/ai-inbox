@@ -65,8 +65,22 @@ function response(value: unknown, status = 200) {
     json: async () => value,
   } as Response;
 }
+class InboxEventSource extends EventTarget {
+  static current: InboxEventSource;
+  onerror: (() => void) | null = null;
+  close = vi.fn();
+  constructor() { super(); InboxEventSource.current = this; }
+}
+let eventRevision = 0;
+function serverChange(baseline = false) {
+  InboxEventSource.current.dispatchEvent(new MessageEvent(baseline ? "baseline" : "change", {
+    data: JSON.stringify({ revision: String(++eventRevision) }),
+  }));
+}
 const fetchMock = vi.fn<typeof fetch>();
 beforeEach(() => {
+  eventRevision = 0;
+  vi.stubGlobal("EventSource", InboxEventSource);
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
   localStorage.clear();
@@ -320,14 +334,14 @@ describe("theme, shortcuts and background updates", () => {
     await screen.findByRole("button", { name: /Older release/ });
     const heading = screen.getByRole("heading", { name: "Test release" });
     updated = true;
-    fireEvent.focus(window);
+    act(() => serverChange());
     expect(screen.queryByLabelText("Loading items")).toBeNull();
     await screen.findByRole("button", { name: /New arrival/ });
     expect(screen.getByRole("button", { name: /Older release/ })).toBeTruthy();
     expect(screen.getByLabelText("3 inbox items")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Test release" })).toBe(heading);
   });
-  it("rejects a stale refresh arriving during a mutation and pauses checks while hidden", async () => {
+  it("rejects a stale live update arriving during a mutation and never polls", async () => {
     navigation.url = "item=test-item";
     let finishRefresh: (value: Response) => void = () => {};
     let refresh = false;
@@ -341,7 +355,7 @@ describe("theme, shortcuts and background updates", () => {
     render(<Inbox />);
     await screen.findByRole("heading", { name: "Test release" });
     await screen.findByLabelText("1 unread items");
-    refresh = true; fireEvent.focus(window);
+    refresh = true; act(() => serverChange());
     fireEvent.click(screen.getByRole("button", { name: "Mark read" }));
     await screen.findByLabelText("0 unread items");
     await act(async () => finishRefresh(response(result())));
@@ -356,21 +370,24 @@ describe("theme, shortcuts and background updates", () => {
 });
 
 
-it("checks every minute only while visible and refreshes on return", async () => {
+it("receives server updates without a refresh button, polling or focus refresh", async () => {
   api();
   vi.useFakeTimers();
-  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   await act(async () => { render(<Inbox />); });
   const initial = fetchMock.mock.calls.length;
-  await act(async () => vi.advanceTimersByTime(60_000));
+  expect(screen.queryByRole("button", { name: "Refresh items" })).toBeNull();
+  await act(async () => vi.advanceTimersByTime(120_000));
+  fireEvent.focus(window);
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(fetchMock.mock.calls.length).toBe(initial);
+  await act(async () => serverChange());
   expect(fetchMock.mock.calls.length).toBe(initial + 1);
-  visibility.mockReturnValue("hidden");
-  await act(async () => vi.advanceTimersByTime(60_000));
-  expect(fetchMock.mock.calls.length).toBe(initial + 1);
-  visibility.mockReturnValue("visible");
-  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  expect(screen.getByText("Live")).toBeTruthy();
+  act(() => InboxEventSource.current.onerror?.());
+  expect(screen.getByText("Reconnecting…")).toBeTruthy();
+  await act(async () => serverChange(true));
   expect(fetchMock.mock.calls.length).toBe(initial + 2);
-  visibility.mockRestore();
+  expect(screen.getByText("Live")).toBeTruthy();
 });
 
 
@@ -537,9 +554,7 @@ describe("Inbox playback navigation", () => {
       await waitFor(() => expect(window.location.search).toContain("kind=alert")); unchanged();
       fireEvent.click(screen.getByRole("button", { name: /Archive0 archive items/ }));
       await screen.findByRole("heading", { name: "Archive" }); unchanged();
-      await waitFor(() => expect(screen.getByRole("button", { name: "Refresh items" }).hasAttribute("disabled")).toBe(false));
-      fireEvent.click(screen.getByRole("button", { name: "Refresh items" }));
-      await waitFor(() => expect(screen.getByRole("button", { name: "Refresh items" }).hasAttribute("disabled")).toBe(false)); unchanged();
+      await act(async () => serverChange()); unchanged();
       fireEvent.click(screen.getByRole("button", { name: "Open playing item: Test release" }));
       await screen.findByRole("heading", { name: "Test release" }); unchanged();
       expect(window.location.search).toContain("view=archive");
@@ -547,5 +562,57 @@ describe("Inbox playback navigation", () => {
       act(() => window.history.back());
       await screen.findByRole("heading", { name: "Select an item to read" }); unchanged();
     } finally { window.removeEventListener("popstate", onPop); }
+  });
+});
+
+describe("live invalidation integration", () => {
+  it("defers an event during a write and updates selected detail outside the list", async () => {
+    route("item=test-item");
+    let finishPatch!: (value: Response) => void;
+    let updated = false;
+    fetchMock.mockImplementation(async (url, options) => {
+      if (options?.method === "PATCH") return new Promise<Response>(resolve => { finishPatch = resolve; });
+      const item = { ...fixture, body: updated ? "Updated report from the server" : fixture.body,
+        readAt: updated ? "2026-10-10T14:00:00Z" : null };
+      if (String(url).startsWith("/api/items?")) return response({ ...result(item), items: [] });
+      return response({ item });
+    });
+    render(<Inbox />);
+    await screen.findByRole("heading", { name: "Release details" });
+    fireEvent.click(screen.getByRole("button", { name: "Mark read" }));
+    updated = true;
+    await act(async () => { serverChange(); serverChange(); });
+    expect(screen.queryByText("Updated report from the server")).toBeNull();
+    await act(async () => finishPatch(response({ item: { ...fixture, readAt: "2026-10-10T14:00:00Z" } })));
+    await screen.findByText("Updated report from the server");
+    expect(screen.getByRole("button", { name: "Mark unread" })).toBeTruthy();
+    expect(window.location.search).toBe("?item=test-item");
+  });
+  it("retains an event while loading another page and replays all loaded pages", async () => {
+    const older = { ...fixture, id: "older", title: "Older report" };
+    const newest = { ...fixture, id: "new", title: "Newest report" };
+    let updated = false;
+    let finishPage!: (value: Response) => void;
+    let pageHeld = false;
+    fetchMock.mockImplementation(async url => {
+      const paged = String(url).includes("cursor=");
+      if (paged && !pageHeld) {
+        pageHeld = true;
+        return new Promise<Response>(resolve => { finishPage = resolve; });
+      }
+      return response({ items: paged ? [older] : updated ? [newest, fixture] : [fixture],
+        nextCursor: paged ? null : "next", total: updated ? 3 : 2,
+        counts: { inbox: updated ? 3 : 2, unread: updated ? 3 : 2, archive: 0 } });
+    });
+    render(<Inbox />);
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    updated = true;
+    await act(async () => serverChange());
+    expect(screen.queryByRole("button", { name: /Newest report/ })).toBeNull();
+    await act(async () => finishPage(response({ items: [older], nextCursor: null, total: 2,
+      counts: { inbox: 2, unread: 2, archive: 0 } })));
+    await screen.findByRole("button", { name: /Newest report/ });
+    expect(screen.getByRole("button", { name: /Older report/ })).toBeTruthy();
+    expect(screen.getByLabelText("3 inbox items")).toBeTruthy();
   });
 });
