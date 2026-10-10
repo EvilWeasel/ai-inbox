@@ -7,18 +7,24 @@ import {
   ArchiveRestore,
   ArrowLeft,
   ArrowUpRight,
+  BellRing,
   Check,
   ChevronRight,
+  FileSearch,
   Inbox as InboxIcon,
   LoaderCircle,
   Mail,
   MailOpen,
+  Moon,
   Menu,
   Newspaper,
   RefreshCw,
   Search,
+  Sun,
+  SunMoon,
   X,
 } from "lucide-react";
+import { DropdownMenu } from "radix-ui";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
@@ -36,6 +42,7 @@ import {
 
 import type { InboxItem, ItemView, ItemList } from "@/lib/contracts";
 import { NotificationType, notificationTypeLabel } from "@/components/notification-type";
+import { InboxMark } from "@/components/inbox-mark";
 export type { InboxItem } from "@/lib/contracts";
 type View = ItemView;
 type ListResult = ItemList;
@@ -339,7 +346,7 @@ export function Inbox() {
         if (search || q) { event.preventDefault(); setSearch(""); navigate({ q: null, item: null }); }
         return;
       }
-      if (target?.closest("input, textarea, select, [contenteditable], [role='dialog']")) return;
+      if (target?.closest("button, input, textarea, select, [contenteditable], [role='dialog'], [role='menu']")) return;
       if (selectedId && window.matchMedia("(max-width: 640px)").matches) {
         event.preventDefault(); navigate({ item: null });
       } else if (search || q) {
@@ -537,9 +544,7 @@ export function Inbox() {
   const navigation = (
     <>
       <div className="sidebar-brand">
-        <span className="brand-mark">
-          <InboxIcon size={19} />
-        </span>
+        <InboxMark className="brand-mark" />
         <span>AI Inbox</span>
       </div>
       <nav aria-label="Inbox views" className="nav-list">
@@ -568,17 +573,37 @@ export function Inbox() {
         ))}
       </nav>
       <div className="theme-control">
-        <label>Theme
-          <select aria-label="Theme" value={theme} onChange={event => {
-            const value = event.target.value as typeof theme;
-            setTheme(value);
-            try { localStorage.setItem("ai-inbox-theme", value); } catch { /* Use the selected theme for this session. */ }
+        <span className="theme-label">Theme</span>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <Button variant="outline" className="theme-trigger" aria-label={`Theme: ${theme}`}>
+              {theme === "light" ? <Sun aria-hidden="true" /> : theme === "dark" ? <Moon aria-hidden="true" /> : <SunMoon aria-hidden="true" />}
+              <span>{theme[0].toUpperCase() + theme.slice(1)}</span>
+              <ChevronRight className="theme-chevron" aria-hidden="true" />
+            </Button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content className="inbox-theme-menu" align="end" sideOffset={8}>
+              <DropdownMenu.Label className="inbox-theme-menu-label">Appearance</DropdownMenu.Label>
+              <DropdownMenu.RadioGroup value={theme} onValueChange={value => {
+            const nextTheme = value as typeof theme;
+            setTheme(nextTheme);
+            try { localStorage.setItem("ai-inbox-theme", nextTheme); } catch { /* Use the selected theme for this session. */ }
           }}>
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-        </label>
+                {(["system", "light", "dark"] as const).map(value => {
+                  const Icon = value === "system" ? SunMoon : value === "light" ? Sun : Moon;
+                  return (
+                    <DropdownMenu.RadioItem key={value} className="inbox-theme-option" value={value}>
+                      <Icon aria-hidden="true" />
+                      <span>{value[0].toUpperCase() + value.slice(1)}</span>
+                      <DropdownMenu.ItemIndicator className="inbox-theme-check"><Check aria-hidden="true" /></DropdownMenu.ItemIndicator>
+                    </DropdownMenu.RadioItem>
+                  );
+                })}
+              </DropdownMenu.RadioGroup>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
         <p>Ctrl/⌘ K search · Esc back / clear</p>
       </div>
       <div className="sidebar-footer">
@@ -633,7 +658,7 @@ export function Inbox() {
               </div>
               <span className="live-connection" data-state={connectionStatus} role="status" aria-live="polite">
                 <span aria-hidden="true" />
-                {connectionStatus === "connected" ? "Live" : connectionStatus === "reconnecting" ? "Reconnecting…" : "Live connection unavailable"}
+                <span className="live-connection-label">{connectionStatus === "connected" ? "Live" : connectionStatus === "reconnecting" ? "Reconnecting…" : "Live connection unavailable"}</span>
               </span>
             </div>
             <form
@@ -682,19 +707,26 @@ export function Inbox() {
             <span id="search-shortcuts" className="sr-only">Ctrl or Command K focuses search. Escape clears search; outside inputs, Escape returns to the list on mobile.</span>
             {refreshError && <p className="pagination-error" role="status">{refreshError}</p>}
             <div className="filter-row">
-              <label htmlFor="kind-filter">Show</label>
-              <select
-                id="kind-filter"
-                value={kind}
-                onChange={(event) =>
-                  navigate({ kind: event.target.value, item: null })
-                }
-              >
-                <option value="">All types</option>
-                <option value="briefing">Briefings</option>
-                <option value="alert">Release alerts</option>
-                <option value="result">Agent results</option>
-              </select>
+              <div className="type-filter" role="group" aria-label="Filter by type">
+                {([
+                  { value: "", label: "All", Icon: InboxIcon },
+                  { value: "briefing", label: "Briefings", Icon: Newspaper },
+                  { value: "alert", label: "Alerts", Icon: BellRing },
+                  { value: "result", label: "Agent results", Icon: FileSearch },
+                ] as const).map(({ value, label, Icon }) => (
+                  <Button
+                    key={value || "all"}
+                    type="button"
+                    variant="ghost"
+                    className="type-filter-chip"
+                    aria-pressed={kind === value}
+                    onClick={() => navigate({ kind: value || null, item: null })}
+                  >
+                    <Icon aria-hidden="true" />
+                    <span>{label}</span>
+                  </Button>
+                ))}
+              </div>
               {q && (
                 <span className="query-label" title={q}>
                   “{q}”
@@ -780,11 +812,7 @@ export function Inbox() {
                           {item.summary || "Open to read this item."}
                         </span>
                         <span className="item-foot">
-                          <span>
-                            {item.kind === "briefing"
-                              ? `${item.edition ? `${item.edition[0].toUpperCase()}${item.edition.slice(1)} ` : ""}briefing`
-                              : notificationTypeLabel(item.kind, item.resultType)}
-                          </span>
+                          {item.kind === "briefing" && item.edition && <span>{item.edition[0].toUpperCase() + item.edition.slice(1)} edition</span>}
                           {item.archivedAt && <span>Archived</span>}
                         </span>
                       </button>

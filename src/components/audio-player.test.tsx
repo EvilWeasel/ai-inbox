@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { AudioPlayerProvider, DetailPlayControl } from "./audio-player";
 import type { InboxItem } from "@/lib/contracts";
+if (typeof globalThis.ResizeObserver === "undefined") {
+  globalThis.ResizeObserver = class ResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  };
+}
 const first = { id: "first", title: "First recording", audioAvailable: true } as InboxItem;
 const second = { id: "second", title: "Second recording", audioAvailable: true } as InboxItem;
 let paused = true;
@@ -70,14 +78,16 @@ describe("persistent audio", () => {
   it("scrubs and applies globally persisted speed; guards nonfinite duration", async () => {
     mount(); await start();
     fireEvent.loadedMetadata(audio());
-    fireEvent.change(screen.getByRole("slider", { name: "Audio position" }), { target: { value: "73" } });
-    expect(audio().currentTime).toBe(73);
-    fireEvent.change(screen.getByLabelText("Playback speed"), { target: { value: "1.5" } });
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Audio position" }), { key: "ArrowRight" });
+    expect(audio().currentTime).toBe(1);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Playback speed, 1 times" }));
+    await user.click(screen.getByRole("menuitemradio", { name: "1.5×" }));
     expect(audio().playbackRate).toBe(1.5);
     expect(localStorage.getItem("ai-inbox-playback-speed")).toBe("1.5");
     duration = Infinity; fireEvent.durationChange(audio());
-    expect((screen.getByRole("slider") as HTMLInputElement).disabled).toBe(true);
-    expect(screen.getByText("1:13 / –:––")).toBeTruthy();
+    expect(screen.getByRole("slider", { name: "Audio position" }).getAttribute("data-disabled")).not.toBeNull();
+    expect(screen.getByText(/0:01/)).toBeTruthy();
   });
   it("reports rejected play without optimistic playing and recovers on explicit Retry", async () => {
     play.mockRejectedValueOnce(new Error("blocked")); mount();
@@ -133,12 +143,17 @@ describe("persistent audio", () => {
     await act(async () => resolve());
     expect(screen.getByRole("button", { name: "Play audio" })).toBeTruthy();
   });
-  it("refresh remount starts silent and retains only the speed preference", async () => {
+  it("refresh remount starts silent and restores speed, volume and mute preferences to the same single node", async () => {
     const view = mount(); await start(); audio().currentTime = 62;
-    fireEvent.change(screen.getByLabelText("Playback speed"), { target: { value: "2" } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Playback speed, 1 times" }));
+    await user.click(screen.getByRole("menuitemradio", { name: "2×" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mute audio" }));
     view.unmount(); mount();
     expect(audio().getAttribute("src")).toBeNull();
     expect(audio().playbackRate).toBe(2);
+    expect(audio().volume).toBe(0.8);
+    expect(audio().muted).toBe(true);
     expect(play).toHaveBeenCalledTimes(1);
   });
   it("title navigation preserves current filters and does not invoke playback", async () => {
@@ -147,5 +162,59 @@ describe("persistent audio", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open playing item: First recording" }));
     expect(window.location.search).toBe("?view=archive&q=query&kind=alert&item=first");
     expect(play).toHaveBeenCalledTimes(1); expect(audio().currentTime).toBe(20);
+  });
+  it("sets real media volume, restores the last audible level after mute, and persists device preferences", () => {
+    mount();
+    const volume = screen.getByRole("slider", { name: "Volume" });
+    fireEvent.keyDown(volume, { key: "ArrowLeft" });
+    expect(audio().volume).toBeCloseTo(0.79);
+    expect(localStorage.getItem("ai-inbox-audio-volume")).toBe("0.79");
+    fireEvent.click(screen.getByRole("button", { name: "Mute audio" }));
+    expect(audio().muted).toBe(true);
+    expect(screen.getByRole("button", { name: "Unmute audio" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Unmute audio" }));
+    expect(audio().muted).toBe(false);
+    expect(audio().volume).toBeCloseTo(0.79);
+    expect(localStorage.getItem("ai-inbox-audio-muted")).toBe("false");
+  });
+  it("unmuting a zero level restores a useful last nonzero volume", () => {
+    localStorage.setItem("ai-inbox-audio-volume", "0");
+    localStorage.setItem("ai-inbox-audio-last-volume", "0.42");
+    localStorage.setItem("ai-inbox-audio-muted", "true");
+    mount();
+    expect(audio().volume).toBe(0);
+    expect(audio().muted).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Unmute audio" }));
+    expect(audio().muted).toBe(false);
+    expect(audio().volume).toBe(0.42);
+  });
+  it("rejects malformed stored preferences and clamps out of range stored volumes", () => {
+    localStorage.setItem("ai-inbox-audio-volume", "nope");
+    localStorage.setItem("ai-inbox-audio-last-volume", "NaN");
+    localStorage.setItem("ai-inbox-audio-muted", "possibly");
+    mount();
+    expect(audio().volume).toBe(0.8);
+    expect(audio().muted).toBe(false);
+    cleanup();
+    localStorage.setItem("ai-inbox-audio-volume", "1.8");
+    mount();
+    expect(audio().volume).toBe(1);
+  });
+  it("opens compact volume controls without muting and provides a keyboard-operable speed menu", async () => {
+    mount();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Adjust volume" }));
+    expect(screen.getByRole("dialog", { name: "Volume controls" })).toBeTruthy();
+    expect(audio().muted).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Mute recording" }));
+    expect(audio().muted).toBe(true);
+    await user.keyboard("{Escape}");
+    const speedTrigger = screen.getByRole("button", { name: "Playback speed, 1 times" });
+    fireEvent.keyDown(speedTrigger, { key: "ArrowDown" });
+    const menu = screen.getByRole("menu");
+    expect(menu).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: "1×" }), { key: "ArrowDown" });
+    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: "1.25×" }), { key: "Enter" });
+    expect(audio().playbackRate).toBe(1.25);
   });
 });

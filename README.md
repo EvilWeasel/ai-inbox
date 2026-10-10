@@ -43,7 +43,10 @@ release changes. Markdown renders without raw HTML. Audio is served by item ID
 with seek support; it never plays automatically. A persistent player keeps the
 current recording and position while navigating, searching or opening another
 item. Choose Play on another recording to switch. The bottom player provides
-pause/resume, seeking, playback speed and a link back to the playing item.
+pause/resume, seeking, playback speed, volume/mute and a link back to the playing
+item. Volume and speed are device preferences; opening mobile volume controls
+does not mute playback. Type filters are directly selectable and appearance
+menus support keyboard navigation.
 
 A same-origin server event stream updates the list, selected report and reading
 counts automatically after committed changes. Reconnection resynchronizes state;

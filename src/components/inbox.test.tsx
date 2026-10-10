@@ -8,6 +8,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { Profiler, useSyncExternalStore } from "react";
+import userEvent from "@testing-library/user-event";
 import { AudioPlayerProvider } from "./audio-player";
 import { Inbox, type InboxItem } from "./inbox";
 
@@ -97,6 +98,11 @@ const fetchMock = vi.fn<typeof fetch>();
 beforeEach(() => {
   eventRevision = 0;
   vi.stubGlobal("EventSource", InboxEventSource);
+  vi.stubGlobal("ResizeObserver", class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
   localStorage.clear();
@@ -135,6 +141,7 @@ function api(item = fixture) {
 
 describe("inbox API interactions", () => {
   it("loads real counts and selected detail, keeps deep links and supports returning through history", async () => {
+    const user = userEvent.setup();
     api();
     render(<Inbox />);
     await screen.findByRole("button", { name: /Test release/ });
@@ -153,9 +160,8 @@ describe("inbox API interactions", () => {
     expect(audio.getAttribute("src")).toBeNull();
     expect(screen.getByRole("button", { name: "Play Test release" })).toBeTruthy();
     expect(audio.getAttribute("autoplay")).toBeNull();
-    fireEvent.change(screen.getByLabelText("Playback speed"), {
-      target: { value: "1.5" },
-    });
+    await user.click(screen.getByRole("button", { name: "Playback speed, 1 times" }));
+    await user.click(screen.getByRole("menuitemradio", { name: "1.5×" }));
     expect((audio as HTMLAudioElement).playbackRate).toBe(1.5);
     act(() => route(""));
     await screen.findByRole("heading", { name: "Select an item to read" });
@@ -172,9 +178,7 @@ describe("inbox API interactions", () => {
     });
     fireEvent.submit(screen.getByRole("search"));
     await waitFor(() => expect(navigation.url).toContain("q=model+update"));
-    fireEvent.change(screen.getByLabelText("Show"), {
-      target: { value: "alert" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Alerts" }));
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.some(([url]) =>
@@ -194,11 +198,29 @@ describe("inbox API interactions", () => {
       ? response(result(resultFixture)) : response({ item: resultFixture }));
     render(<Inbox />);
     await screen.findByRole("button", { name: /Implemented cache invalidation/ });
-    fireEvent.change(screen.getByLabelText("Show"), { target: { value: "result" } });
+    fireEvent.click(screen.getByRole("button", { name: "Agent results" }));
     await waitFor(() => {
       expect(window.location.search).toContain("kind=result");
       expect(fetchMock.mock.calls.some(([url]) => String(url).includes("kind=result"))).toBe(true);
     });
+  });
+  it("exposes the type chips as keyboard-operable pressed filters and clears kind from the URL", async () => {
+    const user = userEvent.setup();
+    api();
+    route("q=morning&kind=alert");
+    render(<Inbox />);
+    await screen.findByRole("button", { name: /Test release/ });
+    const alerts = screen.getByRole("button", { name: "Alerts" });
+    expect(alerts.getAttribute("aria-pressed")).toBe("true");
+    const briefings = screen.getByRole("button", { name: "Briefings" });
+    briefings.focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(window.location.search).toContain("kind=briefing"));
+    expect(window.location.search).toContain("q=morning");
+    expect(briefings.getAttribute("aria-pressed")).toBe("true");
+    await user.click(screen.getByRole("button", { name: "All" }));
+    await waitFor(() => expect(window.location.search).not.toContain("kind="));
+    expect(window.location.search).toContain("q=morning");
   });
   it("shows result origin and only links validated HTTP(S) or strict T3 thread URLs", async () => {
     const item = { ...resultFixture, origin: { ...resultFixture.origin!, threadUrl: "t3-thread://v1/thread-123" } };
@@ -361,7 +383,8 @@ describe("inbox API interactions", () => {
 
 
 describe("theme, shortcuts and background updates", () => {
-  it("persists a selected theme across remounts and follows system changes", async () => {
+  it("persists a selected theme from the accessible menu and follows system changes", async () => {
+    const user = userEvent.setup();
     api();
     const listeners = new Set<() => void>();
     let dark = false;
@@ -370,14 +393,23 @@ describe("theme, shortcuts and background updates", () => {
       removeEventListener: (_: string, callback: () => void) => listeners.delete(callback),
     }));
     const first = render(<Inbox />);
-    fireEvent.change(screen.getByLabelText("Theme"), { target: { value: "dark" } });
+    const trigger = screen.getByRole("button", { name: "Theme: system" });
+    trigger.focus();
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(document.activeElement?.getAttribute("role")).toBe("menuitemradio");
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     first.unmount();
     render(<Inbox />);
-    expect((screen.getByLabelText("Theme") as HTMLSelectElement).value).toBe("dark");
-    fireEvent.change(screen.getByLabelText("Theme"), { target: { value: "light" } });
+    expect(screen.getByRole("button", { name: "Theme: dark" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Theme: dark" }));
+    await user.click(screen.getByRole("menuitemradio", { name: /Light/ }));
     expect(document.documentElement.classList.contains("dark")).toBe(false);
-    fireEvent.change(screen.getByLabelText("Theme"), { target: { value: "system" } });
+    await user.click(screen.getByRole("button", { name: "Theme: light" }));
+    await user.click(screen.getByRole("menuitemradio", { name: /System/ }));
     act(() => { dark = true; listeners.forEach(callback => callback()); });
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     await screen.findByRole("button", { name: /Test release/ });
@@ -393,7 +425,7 @@ describe("theme, shortcuts and background updates", () => {
     expect((search as HTMLInputElement).value).toBe("");
     fireEvent.click(screen.getByRole("button", { name: /Test release/ }));
     await screen.findByRole("heading", { name: "Test release" });
-    fireEvent.keyDown(screen.getByLabelText("Playback speed"), { key: "Escape" });
+    fireEvent.keyDown(screen.getByRole("button", { name: /Playback speed/ }), { key: "Escape" });
     expect(navigation.url).toContain("item=test-item");
     fireEvent.keyDown(window, { key: "k", ctrlKey: true });
     expect(navigation.url).not.toContain("item=");
@@ -624,7 +656,7 @@ describe("Inbox playback navigation", () => {
       const commitsBeforeProgress = inboxCommits;
       fireEvent.timeUpdate(node);
       expect(inboxCommits).toBe(commitsBeforeProgress);
-      expect(screen.getByText("0:43 / 2:05")).toBeTruthy();
+      expect(screen.getByRole("slider", { name: "Audio position" }).getAttribute("aria-valuetext")).toBe("0:43 of 2:05");
       const pauseCount = pause.mock.calls.length;
       const unchanged = () => {
         expect(screen.getByLabelText("Inbox audio")).toBe(node);
@@ -639,7 +671,7 @@ describe("Inbox playback navigation", () => {
       fireEvent.change(screen.getByLabelText("Search items"), { target: { value: "release" } });
       fireEvent.submit(screen.getByRole("search"));
       await screen.findByRole("heading", { name: "Select an item to read" }); unchanged();
-      fireEvent.change(screen.getByLabelText("Show"), { target: { value: "alert" } });
+      fireEvent.click(screen.getByRole("button", { name: "Alerts" }));
       await waitFor(() => expect(window.location.search).toContain("kind=alert")); unchanged();
       fireEvent.click(screen.getByRole("button", { name: /Archive0 archive items/ }));
       await screen.findByRole("heading", { name: "Archive" }); unchanged();

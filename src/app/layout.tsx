@@ -4,7 +4,7 @@ import "./theme.css";
 import { AudioPlayerProvider } from "@/components/audio-player";
 export const metadata: Metadata = {
   title: "AI Inbox",
-  description: "Your briefings and release alerts.",
+  description: "Private briefings, release alerts and finished agent results.",
 };
 export default function RootLayout({
   children,
