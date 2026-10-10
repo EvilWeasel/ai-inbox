@@ -154,6 +154,22 @@ operate only on the three dedicated `ai-inbox` application/deployment units.
 See [local ingestion](ingestion.md) for the separate artifact synchronization
 timer. It uses the same deployment lock and does not run research or models.
 
+## Private hostname and HTTPS
+
+Prefer a private DNS record distributed to authorized overlay peers. A public
+address record is unnecessary when managed private DNS works. DNS-01 can issue
+a publicly trusted certificate while only a temporary challenge TXT record is
+public; the hostname is still visible in Certificate Transparency.
+
+An existing private HTTPS proxy can preserve the incoming Host header and route
+the exact hostname to the configured app address. Install with
+`--public-origin https://inbox.example.test` to configure the external origin;
+the direct private HTTP origin remains available. Host validation accepts only
+configured hosts, and writes require the matching origin for that host. Forwarded
+headers never add allowed origins. Keep private hostnames and proxy configuration
+outside the public repository. Certificate renewal must deploy updated files and
+reload the proxy; successful issuance alone does not establish that lifecycle.
+
 On hosts combining Tailscale and another overlay, anti-spoofing rules may reject
 local requests to the host's own overlay address. Verify actual routing and
 firewall counters. A host-specific exception, if needed, must apply only to the

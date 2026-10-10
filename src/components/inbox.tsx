@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, useLayoutEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useRef, useState, useCallback, useLayoutEffect, memo } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Archive,
   ArchiveRestore,
@@ -133,7 +133,6 @@ function ListSkeleton() {
 }
 
 export function Inbox() {
-  const router = useRouter();
   const params = useSearchParams();
   const rawView = params.get("view");
   const view: View = views.some((v) => v.value === rawView)
@@ -165,7 +164,22 @@ export function Inbox() {
     return () => media.removeEventListener("change", apply);
   }, [theme]);
   const [list, setList] = useState<ListResult | null>(null);
-  const [detail, setDetail] = useState<InboxItem | null>(null);
+  const [fetchedDetail, setDetail] = useState<InboxItem | null>(null);
+  // Bound retained full bodies; the current list is also a valid immediate detail.
+  const detailCache = useRef(new Map<string, InboxItem>());
+  const rememberDetail = useCallback((item: InboxItem) => {
+    const cache = detailCache.current;
+    cache.delete(item.id);
+    cache.set(item.id, item);
+    if (cache.size > 60) cache.delete(cache.keys().next().value!);
+  }, []);
+  const detailController = useRef<AbortController | null>(null);
+  const detailRevision = useRef(0);
+  const mutatingId = useRef<string | null>(null);
+  const detail = selectedId
+    ? (fetchedDetail?.id === selectedId ? fetchedDetail :
+      detailCache.current.get(selectedId) ?? list?.items.find(item => item.id === selectedId) ?? null)
+    : null;
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [listError, setListError] = useState("");
@@ -215,13 +229,17 @@ export function Inbox() {
   currentRoute.current = { listQuery, selectedId };
   const navigate = useCallback(
     (changes: Record<string, string | null>) => {
-      const next = new URLSearchParams(params.toString());
+      // Read the live URL so successive clicks cannot merge against an old render.
+      const next = new URLSearchParams(window.location.search);
       Object.entries(changes).forEach(([key, value]) =>
         value ? next.set(key, value) : next.delete(key),
       );
-      router.push(`/?${next.toString()}`, { scroll: false });
+      const query = next.toString();
+      const url = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+      if (url !== `${window.location.pathname}${window.location.search}${window.location.hash}`)
+        window.history.pushState(null, "", url);
     },
-    [params, router],
+    [],
   );
   useEffect(() => {
     setSearch(q);
@@ -320,31 +338,37 @@ export function Inbox() {
     return () => window.removeEventListener("keydown", keydown);
   }, [navigate, selectedId, search, q, navOpen]);
   useEffect(() => {
-    setDetail(null);
     setDetailError("");
     if (!selectedId) {
       setDetailLoading(false);
       return;
     }
+    // A GET started before a write must never restore pre-write reading state.
+    if (mutatingId.current === selectedId) return;
     const controller = new AbortController();
+    detailController.current = controller;
+    const revision = detailRevision.current;
     setDetailLoading(true);
     request<{ item: InboxItem }>(
       `/api/items/${encodeURIComponent(selectedId)}`,
       { signal: controller.signal },
     )
       .then(({ item }) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || revision !== detailRevision.current ||
+          currentRoute.current.selectedId !== selectedId) return;
+        rememberDetail(item);
         setDetail(item);
         setDetailLoading(false);
       })
       .catch((error) => {
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && revision === detailRevision.current &&
+          currentRoute.current.selectedId === selectedId) {
           setDetailError(error.message);
           setDetailLoading(false);
         }
       });
     return () => controller.abort();
-  }, [selectedId, detailRefresh]);
+  }, [selectedId, detailRefresh, rememberDetail]);
   useEffect(() => {
     if (!selectedId && focusSearchAfterNavigation.current) {
       searchInput.current?.focus({ preventScroll: true });
@@ -358,9 +382,8 @@ export function Inbox() {
     previousSelection.current = selectedId;
   }, [selectedId]);
   useEffect(() => {
-    if (detail && !detailLoading)
-      detailHeading.current?.focus({ preventScroll: true });
-  }, [selectedId, detailLoading]);
+    if (detail) detailHeading.current?.focus({ preventScroll: true });
+  }, [selectedId, detail?.id]);
 
   async function loadMore() {
     if (!list?.nextCursor || moreLoading) return;
@@ -408,11 +431,15 @@ export function Inbox() {
     patch: { read?: boolean; archived?: boolean },
     trigger?: HTMLButtonElement,
   ) {
-    if (!detail || pending) return;
+    if (!detail || mutatingId.current) return;
     if (trigger) actionFocus.current = { id: detail.id, button: trigger };
     const mutationQuery = listQuery;
     const previous = detail;
     const previousList = list;
+    mutatingId.current = detail.id;
+    detailRevision.current++;
+    detailController.current?.abort();
+    setDetailLoading(false);
     const optimistic = {
       ...detail,
       ...(patch.read !== undefined
@@ -428,6 +455,7 @@ export function Inbox() {
     busy.current.pending = true;
     setPending(true);
     setActionError("");
+    rememberDetail(optimistic);
     setDetail(optimistic);
     setList((current) => {
       if (!current) return current;
@@ -472,8 +500,10 @@ export function Inbox() {
           body: JSON.stringify(patch),
         },
       );
+      rememberDetail(item);
       setDetail((current) => (current?.id === item.id ? item : current));
     } catch (error) {
+      rememberDetail(previous);
       setDetail((current) =>
         current?.id === previous.id ? previous : current,
       );
@@ -483,9 +513,10 @@ export function Inbox() {
         setActionError(
           `Change could not be saved. ${(error as Error).message}`,
         );
-        setDetailRefresh((n) => n + 1);
       }
     } finally {
+      mutatingId.current = null;
+      setDetailRefresh((n) => n + 1);
       setPending(false);
       setRefresh((n) => n + 1);
     }
@@ -795,7 +826,7 @@ export function Inbox() {
         <section
           className="detail-panel"
           aria-label="Item detail"
-          aria-busy={detailLoading}
+          aria-busy={detailLoading && !detail}
         >
           {selectedId ? (
             <>
@@ -853,12 +884,18 @@ export function Inbox() {
                 )}
               </header>
               <div className="detail-scroll" key={selectedId}>
-                {detailLoading ? (
+                {detailError && detail && (
+                  <div className="action-error" role="alert">
+                    <p>Refresh failed. The saved item is still available. {detailError}</p>
+                    <Button variant="outline" onClick={() => setDetailRefresh(n => n + 1)}>Retry refresh</Button>
+                  </div>
+                )}
+                {detailLoading && !detail ? (
                   <div className="detail-loading" role="status">
                     <LoaderCircle className="spin" size={20} />
                     Loading item…
                   </div>
-                ) : detailError ? (
+                ) : detailError && !detail ? (
                   <ErrorState
                     message={detailError}
                     retry={() => setDetailRefresh((n) => n + 1)}
@@ -926,29 +963,7 @@ export function Inbox() {
                         </div>
                       )}
                       <AudioPlayer key={detail.id} item={detail} />
-                      <div className="markdown">
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            img: ({ alt }) => (
-                              <span className="markdown-image-label">
-                                {alt ? `Image: ${alt}` : "Image"}
-                              </span>
-                            ),
-                            a: ({ href, children }) => (
-                              <a
-                                href={href}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                              >
-                                {children}
-                              </a>
-                            ),
-                          }}
-                        >
-                          {readingBody(detail)}
-                        </ReactMarkdown>
-                      </div>
+                      <MarkdownBody body={readingBody(detail)} />
                       {detail.tags.length > 0 && (
                         <div className="tags" aria-label="Tags">
                           {detail.tags.map((tag) => (
@@ -1093,3 +1108,28 @@ function AudioPlayer({ item }: { item: InboxItem }) {
     </section>
   );
 }
+
+// Markdown parsing is independent of search typing, playback and read/archive state.
+const MarkdownBody = memo(function MarkdownBody({ body }: { body: string }) {
+  return (
+    <div className="markdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          img: ({ alt }) => (
+            <span className="markdown-image-label">
+              {alt ? `Image: ${alt}` : "Image"}
+            </span>
+          ),
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noopener noreferrer">
+              {children}
+            </a>
+          ),
+        }}
+      >
+        {body}
+      </ReactMarkdown>
+    </div>
+  );
+});

@@ -8,17 +8,23 @@ export function failure(error: unknown) {
   return json({error:'Service unavailable'},503);
 }
 export function assertTrustedHost(request: Request) {
-  const configured = process.env.INBOX_ORIGIN;
-  if (!configured) return;
-  const expected = new URL(configured);
+  const configured = allowedOrigins();
+  if (!configured.length) return;
   const host = request.headers.get('host') ?? new URL(request.url).host;
-  if (host.toLowerCase() !== expected.host.toLowerCase()) throw new ApiError(403,'Host not allowed');
+  if (!configured.some(origin => new URL(origin).host.toLowerCase() === host.toLowerCase())) throw new ApiError(403,'Host not allowed');
+}
+function allowedOrigins() {
+  if (!process.env.INBOX_ORIGIN) return [];
+  return [process.env.INBOX_ORIGIN, ...(process.env.INBOX_ADDITIONAL_ORIGINS ?? '').split(',').filter(Boolean)];
 }
 export function assertSameOrigin(request: Request) {
   assertTrustedHost(request);
   const origin = request.headers.get('origin');
   const site = request.headers.get('sec-fetch-site');
-  if (origin !== (process.env.INBOX_ORIGIN ?? new URL(request.url).origin) || (site && site !== 'same-origin' && site !== 'none')) throw new ApiError(403,'Same-origin request required');
+  const configured = allowedOrigins();
+  const host = request.headers.get('host') ?? new URL(request.url).host;
+  const expected = configured.length ? configured.filter(value => new URL(value).host.toLowerCase() === host.toLowerCase()) : [new URL(request.url).origin];
+  if (!origin || !expected.includes(origin) || (site && site !== 'same-origin' && site !== 'none')) throw new ApiError(403,'Same-origin request required');
 }
 export async function readPatch(request: Request) {
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get('content-type')??'')) throw new ApiError(415,'JSON required');

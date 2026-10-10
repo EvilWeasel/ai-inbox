@@ -8,15 +8,15 @@ Usage: scripts/deploy-install.sh --repo-url PUBLIC_GITHUB_HTTPS_URL
   --root ABSOLUTE_RELEASE_ROOT --data-dir ABSOLUTE_DATA_DIR
   --bind NETBIRD_IPV4 --interface NETBIRD_INTERFACE
   --bun ABSOLUTE_BUN_PATH --node ABSOLUTE_NODE_PATH
-  [--port 3000] [--release-keep 5] [--backup-keep 7] [--activate]
+  [--port 3000] [--public-origin HTTPS_ORIGIN] [--release-keep 5] [--backup-keep 7] [--activate]
 EOF
 }
-PORT=3000 RELEASE_KEEP=5 BACKUP_KEEP=7 activate=0
+PORT=3000 RELEASE_KEEP=5 BACKUP_KEEP=7 PUBLIC_ORIGIN='' activate=0
 while (($#)); do
   case "$1" in
     --activate) activate=1; shift; continue ;;
     --help) usage; exit 0 ;;
-    --repo-url|--root|--data-dir|--bind|--interface|--bun|--node|--port|--release-keep|--backup-keep)
+    --repo-url|--root|--data-dir|--bind|--interface|--bun|--node|--port|--public-origin|--release-keep|--backup-keep)
       (($# >= 2)) || { usage >&2; exit 2; }
       case "$1" in
         --repo-url) REPO_URL=$2 ;; --root) DEPLOY_ROOT=$2 ;;
@@ -24,11 +24,20 @@ while (($#)); do
         --interface) NETBIRD_INTERFACE=$2 ;; --bun) BUN_BIN=$2 ;;
         --node) NODE_BIN=$2 ;; --port) PORT=$2 ;;
         --release-keep) RELEASE_KEEP=$2 ;; --backup-keep) BACKUP_KEEP=$2 ;;
+        --public-origin) PUBLIC_ORIGIN=$2 ;;
       esac
       shift 2 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
+python3 - "$PUBLIC_ORIGIN" <<'PY'
+import sys, urllib.parse
+value = sys.argv[1]
+if value:
+    u = urllib.parse.urlsplit(value)
+    if u.scheme not in ('http', 'https') or not u.hostname or u.username or u.password or value != f'{u.scheme}://{u.netloc}':
+        raise SystemExit('Public origin must be an HTTP(S) origin without credentials, path, query or fragment')
+PY
 for name in REPO_URL DEPLOY_ROOT INBOX_DATA_DIR BIND_ADDRESS NETBIRD_INTERFACE BUN_BIN NODE_BIN; do
   [[ -n ${!name:-} ]] || { echo "Missing required parameter: $name" >&2; exit 2; }
 done
@@ -63,7 +72,7 @@ mkdir -p "$config_dir" "$script_dir" "$unit_dir" "$DEPLOY_ROOT" "$INBOX_DATA_DIR
 chmod 700 "$config_dir" "$script_dir" "$DEPLOY_ROOT" "$INBOX_DATA_DIR"
 config_tmp=$(mktemp "$config_dir/.runtime-XXXXXXXX")
 trap 'rm -f -- "$config_tmp"' EXIT
-for name in REPO_URL DEPLOY_ROOT INBOX_DATA_DIR BIND_ADDRESS NETBIRD_INTERFACE PORT BUN_BIN NODE_BIN RELEASE_KEEP BACKUP_KEEP; do
+for name in REPO_URL DEPLOY_ROOT INBOX_DATA_DIR BIND_ADDRESS NETBIRD_INTERFACE PORT BUN_BIN NODE_BIN RELEASE_KEEP BACKUP_KEEP PUBLIC_ORIGIN; do
   printf '%s=%q\n' "$name" "${!name}" >> "$config_tmp"
 done
 chmod 600 "$config_tmp"

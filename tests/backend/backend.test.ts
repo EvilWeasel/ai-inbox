@@ -159,3 +159,18 @@ test('production host restriction rejects rebinding while configured origin supp
     assert.throws(()=>assertSameOrigin(new Request('http://localhost:3400/api/items',{headers:{host:'192.0.2.1:3400',origin:'https://attacker.example'}})));
   } finally {if(old===undefined)delete process.env.INBOX_ORIGIN;else process.env.INBOX_ORIGIN=old;}
 });
+test('HTTPS proxy and direct private origin each require their matching Host',()=>{
+  const old=process.env.INBOX_ORIGIN, aliases=process.env.INBOX_ADDITIONAL_ORIGINS;
+  process.env.INBOX_ORIGIN='https://inbox.example.test';process.env.INBOX_ADDITIONAL_ORIGINS='http://192.0.2.1:3400';
+  const request=(host:string,origin:string)=>new Request('http://localhost:3400/api/items',{headers:{host,origin}});
+  try {
+    assert.doesNotThrow(()=>assertSameOrigin(request('inbox.example.test','https://inbox.example.test')));
+    assert.doesNotThrow(()=>assertSameOrigin(request('192.0.2.1:3400','http://192.0.2.1:3400')));
+    assert.throws(()=>assertSameOrigin(request('inbox.example.test','http://192.0.2.1:3400')));
+    assert.throws(()=>assertSameOrigin(request('192.0.2.1:3400','https://inbox.example.test')));
+    assert.throws(()=>assertTrustedHost(request('attacker.example','https://inbox.example.test')));
+  } finally {
+    if(old===undefined)delete process.env.INBOX_ORIGIN;else process.env.INBOX_ORIGIN=old;
+    if(aliases===undefined)delete process.env.INBOX_ADDITIONAL_ORIGINS;else process.env.INBOX_ADDITIONAL_ORIGINS=aliases;
+  }
+});

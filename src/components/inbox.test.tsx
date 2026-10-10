@@ -29,7 +29,9 @@ vi.mock("next/navigation", () => ({
   },
 }));
 function route(url: string) {
-  navigation.url = url.replace(/^\/\?/, "");
+  const query = url.replace(/^\/\?/, "");
+  window.history.replaceState(null, "", query ? `/?${query}` : "/");
+  navigation.url = query;
   navigation.listeners.forEach((fn) => fn());
 }
 const fixture: InboxItem = {
@@ -68,8 +70,15 @@ beforeEach(() => {
     matches: query.includes("max-width"), media: query,
     addEventListener: vi.fn(), removeEventListener: vi.fn(),
   })));
-  navigation.url = "";
-  navigation.push.mockReset().mockImplementation((url) => route(url));
+  route("");
+  navigation.push.mockReset();
+  // Emulate Next's documented native-history integration, without a router push.
+  const pushState = window.history.pushState.bind(window.history);
+  vi.spyOn(window.history, "pushState").mockImplementation((data, unused, url) => {
+    pushState(data, unused, url);
+    navigation.url = window.location.search.slice(1);
+    navigation.listeners.forEach(fn => fn());
+  });
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -77,6 +86,7 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 function api(item = fixture) {
   fetchMock.mockImplementation(async (url, options) =>
@@ -354,4 +364,122 @@ it("checks every minute only while visible and refreshes on return", async () =>
   await act(async () => document.dispatchEvent(new Event("visibilitychange")));
   expect(fetchMock.mock.calls.length).toBe(initial + 2);
   visibility.mockRestore();
+});
+
+
+describe("immediate local navigation and detail races", () => {
+  it("shows the full list item before its detail GET completes and never calls router.push", async () => {
+    let finish: (value: Response) => void = () => {};
+    fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
+      ? response(result()) : new Promise<Response>(resolve => { finish = resolve; }));
+    render(<Inbox />);
+    fireEvent.click(await screen.findByRole("button", { name: /Test release/ }));
+    expect(window.location.search).toBe("?item=test-item");
+    expect(navigation.push).not.toHaveBeenCalled();
+    const historyLength = window.history.length;
+    fireEvent.click(screen.getByRole("button", { name: /Test release/ }));
+    expect(window.history.length).toBe(historyLength);
+    expect(screen.getByRole("heading", { name: "Test release" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Release details" })).toBeTruthy();
+    expect(screen.queryByText("Loading item…")).toBeNull();
+    await act(async () => finish(response({ item: { ...fixture, body: "Fresh server detail" } })));
+    expect(screen.getByText("Fresh server detail")).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).startsWith("/api/items?")).length).toBe(1);
+  });
+
+  it("keeps cached detail during retry and ignores an old selection response", async () => {
+    const second = { ...fixture, id: "second", title: "Second release", body: "Second body" };
+    const finishes: Array<(value: Response) => void> = [];
+    fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
+      ? response({ ...result(), items: [fixture, second], total: 2 })
+      : new Promise<Response>(resolve => { finishes.push(resolve); }));
+    render(<Inbox />);
+    fireEvent.click(await screen.findByRole("button", { name: /Test release/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Second release/ }));
+    await act(async () => finishes[0](response({ item: { ...fixture, title: "Stale first detail" } })));
+    expect(screen.getByRole("heading", { name: "Second release" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Stale first detail" })).toBeNull();
+    await act(async () => finishes[1](response({ item: { ...second, body: "Cached second body" } })));
+    act(() => route(""));
+    fireEvent.click(screen.getByRole("button", { name: /Second release/ }));
+    expect(screen.getByText("Cached second body")).toBeTruthy();
+    await act(async () => finishes[2](response({}, 503)));
+    expect(screen.getByText("Cached second body")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry refresh" }));
+    expect(screen.getByText("Cached second body")).toBeTruthy();
+    await act(async () => finishes[3](response({ item: second })));
+  });
+
+  it.each(["before", "after"])("ignores a stale detail GET arriving %s PATCH completion", async timing => {
+    let finishGet: (value: Response) => void = () => {};
+    let finishPatch: (value: Response) => void = () => {};
+    let saved = false;
+    fetchMock.mockImplementation(async (url, options) => {
+      if (options?.method === "PATCH") return new Promise<Response>(resolve => { finishPatch = resolve; });
+      const item = { ...fixture, readAt: saved ? "2026-10-10T13:00:00Z" : null };
+      if (String(url).startsWith("/api/items?")) return response(result(item));
+      if (saved) return response({ item });
+      return new Promise<Response>(resolve => { finishGet = resolve; });
+    });
+    render(<Inbox />);
+    fireEvent.click(await screen.findByRole("button", { name: /Test release/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Mark read" }));
+    if (timing === "before") await act(async () => finishGet(response({ item: fixture })));
+    expect(screen.getByRole("button", { name: "Mark unread" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByLabelText("0 unread items")).toBeTruthy();
+    saved = true;
+    await act(async () => finishPatch(response({ item: { ...fixture, readAt: "2026-10-10T13:00:00Z" } })));
+    if (timing === "after") await act(async () => finishGet(response({ item: fixture })));
+    expect(screen.getByRole("button", { name: "Mark unread" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByLabelText("0 unread items")).toBeTruthy();
+  });
+
+  it("retains a pending mutation when navigating away and back without fetching pre-write detail", async () => {
+    let finishPatch: (value: Response) => void = () => {};
+    let item = fixture;
+    fetchMock.mockImplementation(async (url, options) => {
+      if (options?.method === "PATCH") return new Promise<Response>(resolve => { finishPatch = resolve; });
+      return String(url).startsWith("/api/items?") ? response(result(item)) : response({ item });
+    });
+    render(<Inbox />);
+    fireEvent.click(await screen.findByRole("button", { name: /Test release/ }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/items/test-item")).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Mark read" }));
+    const getCalls = () => fetchMock.mock.calls.filter(([url, options]) =>
+      url === "/api/items/test-item" && options?.method !== "PATCH").length;
+    const beforeReturn = getCalls();
+    act(() => route(""));
+    fireEvent.click(screen.getByRole("button", { name: /Test release/ }));
+    expect(screen.getByRole("button", { name: "Mark unread" }).hasAttribute("disabled")).toBe(true);
+    expect(getCalls()).toBe(beforeReturn);
+    item = { ...fixture, readAt: "2026-10-10T13:00:00Z" };
+    await act(async () => finishPatch(response({ item })));
+    expect(screen.getByRole("button", { name: "Mark unread" }).hasAttribute("disabled")).toBe(false);
+    expect(getCalls()).toBe(beforeReturn + 1);
+    expect(screen.getByLabelText("0 unread items")).toBeTruthy();
+  });
+
+  it("uses real Back and Forward entries, preserving filters and focus", async () => {
+    api();
+    // Next updates useSearchParams on popstate; leave traversal to real browser history.
+    const onPop = () => {
+      navigation.url = window.location.search.slice(1);
+      navigation.listeners.forEach(fn => fn());
+    };
+    window.addEventListener("popstate", onPop);
+    try {
+      route("view=all&kind=alert&q=release");
+      render(<Inbox />);
+      fireEvent.click(await screen.findByRole("button", { name: /Test release/ }));
+      await screen.findByRole("heading", { name: "Test release" });
+      act(() => window.history.back());
+      await screen.findByRole("heading", { name: "Select an item to read" });
+      expect(window.location.search).toBe("?view=all&kind=alert&q=release");
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: /Test release/ }));
+      act(() => window.history.forward());
+      await screen.findByRole("heading", { name: "Test release" });
+      expect(window.location.search).toContain("item=test-item");
+      expect(navigation.push).not.toHaveBeenCalled();
+    } finally { window.removeEventListener("popstate", onPop); }
+  });
 });
