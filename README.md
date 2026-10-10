@@ -39,7 +39,10 @@ boundary; restrict allowed peers with your network ACLs.
 The app accepts existing and newly produced briefings through a local importer.
 Reading and archive state belongs to the database and survives reimport and
 release changes. Markdown renders without raw HTML. Audio is served by item ID
-with seek support; it never plays automatically.
+with seek support; it never plays automatically. A persistent player keeps the
+current recording and position while navigating, searching or opening another
+item. Choose Play on another recording to switch. The bottom player provides
+pause/resume, seeking, playback speed and a link back to the playing item.
 
 ## Extension direction
 

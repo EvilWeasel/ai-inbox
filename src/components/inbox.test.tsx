@@ -3,12 +3,15 @@ import {
   act,
   cleanup,
   fireEvent,
-  render,
+  render as testingRender,
   screen,
   waitFor,
 } from "@testing-library/react";
-import { useSyncExternalStore } from "react";
+import { Profiler, useSyncExternalStore } from "react";
+import { AudioPlayerProvider } from "./audio-player";
 import { Inbox, type InboxItem } from "./inbox";
+
+function render(ui: React.ReactNode) { return testingRender(<AudioPlayerProvider>{ui}</AudioPlayerProvider>); }
 
 const navigation = vi.hoisted(() => ({
   url: "",
@@ -64,6 +67,8 @@ function response(value: unknown, status = 200) {
 }
 const fetchMock = vi.fn<typeof fetch>();
 beforeEach(() => {
+  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+  vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
   localStorage.clear();
   document.documentElement.classList.remove("dark");
   vi.stubGlobal("matchMedia", vi.fn().mockImplementation((query: string) => ({
@@ -114,7 +119,9 @@ describe("inbox API interactions", () => {
     expect(
       fetchMock.mock.calls.some(([, options]) => options?.method === "PATCH"),
     ).toBe(false);
-    const audio = screen.getByLabelText("Listen to Test release");
+    const audio = screen.getByLabelText("Inbox audio");
+    expect(audio.getAttribute("src")).toBeNull();
+    expect(screen.getByRole("button", { name: "Play Test release" })).toBeTruthy();
     expect(audio.getAttribute("autoplay")).toBeNull();
     fireEvent.change(screen.getByLabelText("Playback speed"), {
       target: { value: "1.5" },
@@ -377,7 +384,7 @@ describe("immediate local navigation and detail races", () => {
     expect(window.location.search).toBe("?item=test-item");
     expect(navigation.push).not.toHaveBeenCalled();
     const historyLength = window.history.length;
-    fireEvent.click(screen.getByRole("button", { name: /Test release/ }));
+    fireEvent.click(screen.getByRole("button", { name: /example.org.*Test release/ }));
     expect(window.history.length).toBe(historyLength);
     expect(screen.getByRole("heading", { name: "Test release" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Release details" })).toBeTruthy();
@@ -480,6 +487,65 @@ describe("immediate local navigation and detail races", () => {
       await screen.findByRole("heading", { name: "Test release" });
       expect(window.location.search).toContain("item=test-item");
       expect(navigation.push).not.toHaveBeenCalled();
+    } finally { window.removeEventListener("popstate", onPop); }
+  });
+});
+
+
+describe("Inbox playback navigation", () => {
+  it("keeps audio node, source, position and playing across selection, search, filter, archive view, refresh and Back", async () => {
+    let paused = true;
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async () => { paused = false; });
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => { paused = true; });
+    vi.spyOn(HTMLMediaElement.prototype, "paused", "get").mockImplementation(() => paused);
+    const other = { ...fixture, id: "other", title: "Other recording" };
+    fetchMock.mockImplementation(async (url) => String(url).startsWith("/api/items?")
+      ? response({ ...result(), items: [fixture, other], total: 2 })
+      : response({ item: String(url).includes("other") ? other : fixture }));
+    const onPop = () => { navigation.url = window.location.search.slice(1); navigation.listeners.forEach(fn => fn()); };
+    window.addEventListener("popstate", onPop);
+    try {
+      let inboxCommits = 0;
+      render(<Profiler id="inbox" onRender={() => { inboxCommits++; }}><Inbox /></Profiler>);
+      fireEvent.click(await screen.findByRole("button", { name: /Test release/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Play Test release" }));
+      await screen.findByRole("button", { name: "Pause audio" });
+      const node = screen.getByLabelText("Inbox audio") as HTMLAudioElement;
+      node.currentTime = 43;
+      vi.spyOn(HTMLMediaElement.prototype, "currentSrc", "get").mockImplementation(() => node.src);
+      vi.spyOn(HTMLMediaElement.prototype, "readyState", "get").mockReturnValue(1);
+      vi.spyOn(HTMLMediaElement.prototype, "duration", "get").mockReturnValue(125);
+      const commitsBeforeProgress = inboxCommits;
+      fireEvent.timeUpdate(node);
+      expect(inboxCommits).toBe(commitsBeforeProgress);
+      expect(screen.getByText("0:43 / 2:05")).toBeTruthy();
+      const pauseCount = pause.mock.calls.length;
+      const unchanged = () => {
+        expect(screen.getByLabelText("Inbox audio")).toBe(node);
+        expect(node.getAttribute("src")).toBe("/api/items/test-item/audio");
+        expect(node.currentTime).toBe(43);
+        expect(play).toHaveBeenCalledTimes(1);
+        expect(pause.mock.calls.length).toBe(pauseCount);
+        expect(screen.getByRole("button", { name: "Pause audio" })).toBeTruthy();
+      };
+      fireEvent.click(screen.getByRole("button", { name: /Other recording/ }));
+      await screen.findByRole("heading", { name: "Other recording" }); unchanged();
+      fireEvent.change(screen.getByLabelText("Search items"), { target: { value: "release" } });
+      fireEvent.submit(screen.getByRole("search"));
+      await screen.findByRole("heading", { name: "Select an item to read" }); unchanged();
+      fireEvent.change(screen.getByLabelText("Show"), { target: { value: "alert" } });
+      await waitFor(() => expect(window.location.search).toContain("kind=alert")); unchanged();
+      fireEvent.click(screen.getByRole("button", { name: /Archive0 archive items/ }));
+      await screen.findByRole("heading", { name: "Archive" }); unchanged();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Refresh items" }).hasAttribute("disabled")).toBe(false));
+      fireEvent.click(screen.getByRole("button", { name: "Refresh items" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Refresh items" }).hasAttribute("disabled")).toBe(false)); unchanged();
+      fireEvent.click(screen.getByRole("button", { name: "Open playing item: Test release" }));
+      await screen.findByRole("heading", { name: "Test release" }); unchanged();
+      expect(window.location.search).toContain("view=archive");
+      expect(window.location.search).toContain("q=release");
+      act(() => window.history.back());
+      await screen.findByRole("heading", { name: "Select an item to read" }); unchanged();
     } finally { window.removeEventListener("popstate", onPop); }
   });
 });

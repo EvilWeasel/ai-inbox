@@ -1144,3 +1144,29 @@ h1 {
 .theme-control p { font-size: 10px; line-height: 1.6; margin: 12px 0 0; }
 .sidebar-footer, .mobile-sidebar .sidebar-footer { margin-top: 0; }
 select option { color: var(--foreground); background: var(--background); }
+
+/* The dock occupies a real grid row, so neither pane can scroll behind it. */
+.player-layout { height: 100dvh; display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; }
+.player-content { min-height: 0; min-width: 0; overflow: hidden; }
+.player-content .inbox-shell { height: 100%; min-height: 0; }
+.player-dock { border-top: 1px solid var(--border); background: var(--inbox-surface); color: var(--foreground); padding: 12px max(20px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 2fr); gap: 6px 24px; }
+.player-recording { min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+.player-title { text-align: left; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 44px; max-width: 100%; }
+.player-state, .player-empty { font-size: 12px; color: var(--muted); }
+.player-controls { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.player-controls > button, .detail-play-control { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--inbox-surface-muted); color: var(--foreground); flex-shrink: 0; }
+.detail-play-control { padding: 0 14px; margin-right: 12px; }
+.player-progress { flex: 1; min-width: 0; }
+.player-progress input { display: block; width: 100%; min-height: 44px; accent-color: var(--inbox-focus); cursor: pointer; }
+.player-time { display: block; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.player-speed select { min-height: 44px; border: 1px solid var(--border); border-radius: 8px; padding: 0 6px; color: var(--foreground); background: var(--inbox-surface); }
+.player-error { grid-column: 1 / -1; color: var(--inbox-error-text); font-size: 12px; margin: 0; overflow-wrap: anywhere; }
+.player-dock button:disabled { opacity: .45; }
+@media (max-width: 640px) {
+  .player-dock { grid-template-columns: minmax(0, 1fr); gap: 4px; padding-top: 6px; }
+  .player-recording { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+  .player-title { min-height: 44px; }
+  .player-empty { padding: 8px 0; }
+  .player-controls { gap: 10px; }
+  .audio-player { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+}

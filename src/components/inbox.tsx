@@ -25,6 +25,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DetailPlayControl } from "@/components/audio-player";
 import { Badge } from "@/components/ui/badge";
 import {
   Sheet,
@@ -962,7 +963,7 @@ export function Inbox() {
                           </Button>
                         </div>
                       )}
-                      <AudioPlayer key={detail.id} item={detail} />
+                      <DetailPlayControl item={detail} />
                       <MarkdownBody body={readingBody(detail)} />
                       {detail.tags.length > 0 && (
                         <div className="tags" aria-label="Tags">
@@ -1040,75 +1041,6 @@ export function Inbox() {
     </div>
   );
 }
-function AudioPlayer({ item }: { item: InboxItem }) {
-  const audio = useRef<HTMLAudioElement>(null);
-  const [rate, setRate] = useState("1");
-  const [error, setError] = useState(false);
-  if (!item.audioAvailable)
-    return (
-      <div className="audio-unavailable">
-        <AudioLines size={16} />
-        <span>Audio is not available for this item.</span>
-      </div>
-    );
-  return (
-    <section className="audio-player" aria-label="Audio briefing">
-      <div className="audio-heading">
-        <span>
-          <AudioLines size={17} />
-          Listen
-          {item.audioDuration != null && item.audioDuration > 0 && (
-            <span className="audio-duration">
-              {Math.floor(item.audioDuration / 60)}:
-              {String(Math.floor(item.audioDuration % 60)).padStart(2, "0")}
-            </span>
-          )}
-        </span>
-        <label>
-          Speed
-          <select
-            aria-label="Playback speed"
-            value={rate}
-            onChange={(event) => {
-              setRate(event.target.value);
-              if (audio.current)
-                audio.current.playbackRate = Number(event.target.value);
-            }}
-          >
-            {[0.75, 1, 1.25, 1.5, 1.75, 2].map((speed) => (
-              <option value={speed} key={speed}>
-                {speed}×
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      {error ? (
-        <div className="audio-error" role="alert">
-          <p>Audio could not be loaded.</p>
-          <Button size="sm" variant="outline" onClick={() => setError(false)}>
-            Retry audio
-          </Button>
-        </div>
-      ) : (
-        <audio
-          ref={audio}
-          controls
-          preload="metadata"
-          src={`/api/items/${encodeURIComponent(item.id)}/audio`}
-          aria-label={`Listen to ${item.title}`}
-          onError={() => setError(true)}
-          onLoadedMetadata={() => {
-            if (audio.current) audio.current.playbackRate = Number(rate);
-          }}
-        >
-          Your browser does not support audio playback.
-        </audio>
-      )}
-    </section>
-  );
-}
-
 // Markdown parsing is independent of search typing, playback and read/archive state.
 const MarkdownBody = memo(function MarkdownBody({ body }: { body: string }) {
   return (
