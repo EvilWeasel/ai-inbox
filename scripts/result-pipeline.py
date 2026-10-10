@@ -95,20 +95,33 @@ def private_path(value: Any, label: str) -> Path:
 
 def load_config(path: str | Path) -> dict:
     config = read_json(path)
-    required = {"captureConfigFile", "bridgeConfigFile", "stateDir", "decisionHelperArgv",
-                "audioHelperConfigFile", "voiceProfileSha256"}
+    required = {"captureConfigFile", "bridgeConfigFile", "stateDir", "decisionHelperArgv"}
     if not required.issubset(config):
         raise PipelineError("pipeline config is missing required fields")
-    for key in ("captureConfigFile", "bridgeConfigFile", "audioHelperConfigFile"):
+    for key in ("captureConfigFile", "bridgeConfigFile"):
         config[key] = str(private_files.assert_private_file(private_path(config[key], key)))
+    mode = config.get("audioDeliveryMode", "local")
+    if not isinstance(mode, str) or mode not in {"local", "central"}:
+        raise PipelineError("audioDeliveryMode must be local or central")
+    config["audioDeliveryMode"] = mode
+    if mode == "local":
+        if not config.get("audioHelperConfigFile") or not config.get("voiceProfileSha256"):
+            raise PipelineError("local audio mode requires its helper config and voice profile")
+        config["audioHelperConfigFile"] = str(private_files.assert_private_file(
+            private_path(config["audioHelperConfigFile"], "audioHelperConfigFile")))
+        if not SHA_RE.fullmatch(str(config["voiceProfileSha256"])):
+            raise PipelineError("voiceProfileSha256 must be a SHA-256 digest")
+    else:
+        config.pop("audioHelperConfigFile", None)
+        profile = config.get("voiceProfileSha256")
+        if profile is not None and not SHA_RE.fullmatch(str(profile)):
+            raise PipelineError("voiceProfileSha256 must be a SHA-256 digest")
     state = private_path(config["stateDir"], "stateDir")
     config["stateDir"] = str(private_files.ensure_private_directory(state))
     argv = config["decisionHelperArgv"]
     if (not isinstance(argv, list) or not argv or len(argv) > 64
             or any(not isinstance(arg, str) or not arg or len(arg) > 4096 for arg in argv)):
         raise PipelineError("decisionHelperArgv must be a fixed non-empty argument vector")
-    if not SHA_RE.fullmatch(str(config["voiceProfileSha256"])):
-        raise PipelineError("voiceProfileSha256 must be a SHA-256 digest")
     timeout = config.get("decisionHelperTimeoutSeconds", 60)
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 300:
         raise PipelineError("decision helper timeout must be between 1 and 300 seconds")
@@ -155,6 +168,7 @@ def _connect(config: dict) -> sqlite3.Connection:
           status TEXT NOT NULL CHECK(status IN ('candidate-reviewed','excluded','review-needed','text-delivered','audio-pending','audio-ready','audio-delivered','blocked')),
           metadata_path TEXT, metadata_sha256 TEXT, spoken_path TEXT, spoken_sha256 TEXT,
           original_audio_path TEXT, original_audio_sha256 TEXT, audio_job_id TEXT,
+          central_audio_job_id TEXT, central_audio_item_id TEXT,
           receipt_json TEXT, reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
           retry_attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT,
           audio_retry_attempts INTEGER NOT NULL DEFAULT 0,
@@ -170,7 +184,8 @@ def _connect(config: dict) -> sqlite3.Connection:
     """)
     columns = {row[1] for row in db.execute("PRAGMA table_info(pipeline_candidates)")}
     for name, declaration in (("retry_attempts", "INTEGER NOT NULL DEFAULT 0"), ("next_attempt_at", "TEXT"),
-                              ("audio_retry_attempts", "INTEGER NOT NULL DEFAULT 0")):
+                              ("audio_retry_attempts", "INTEGER NOT NULL DEFAULT 0"),
+                              ("central_audio_job_id", "TEXT"), ("central_audio_item_id", "TEXT")):
         if name not in columns:
             db.execute(f"ALTER TABLE pipeline_candidates ADD COLUMN {name} {declaration}")
     private_files.secure_sqlite_artifacts(db_path)
@@ -646,17 +661,26 @@ class ResultPipeline:
 
     def _receipt(self, db, cid, receipt, status):
         if not isinstance(receipt, dict):
-            receipt = {"stored": False, "reason": "invalid_receipt_shape"}
+            raise PipelineError("result sender returned an invalid receipt")
+        authored = receipt.get("authoredStage") is True
+        if not authored and (receipt.get("delivered") is not True
+                             or not isinstance(receipt.get("itemId"), str)
+                             or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", receipt["itemId"])):
+            raise PipelineError("result sender did not confirm a written Inbox item")
         safe = {key: value for key, value in receipt.items()
-                if key in {"delivered", "itemId", "created", "authoredStage"}
+                if key in {"delivered", "itemId", "created", "authoredStage", "audioDelivered", "audioSha256", "audioDuration"}
                 and (value is None or isinstance(value, bool)
                      or (isinstance(value, int) and value.bit_length() <= 64)
+                     or (isinstance(value, float) and math.isfinite(value))
                      or (isinstance(value, str) and len(value) <= 4096))}
         encoded = json.dumps(safe, ensure_ascii=False, separators=(",", ":"))
         if len(encoded.encode("utf-8")) > 16_000:
             encoded = '{"stored":false,"reason":"receipt_too_large"}'
         db.execute("UPDATE pipeline_candidates SET status=?,receipt_json=?,updated_at=? WHERE candidate_id=?",
                    (status,encoded,utc_now(),cid))
+        if receipt.get("delivered") is True and self.config.get("audioDeliveryMode", "local") == "central":
+            db.execute("UPDATE pipeline_candidates SET central_audio_item_id=COALESCE(central_audio_item_id,?) WHERE candidate_id=?",
+                       (receipt["itemId"], cid))
         db.execute("UPDATE pipeline_candidates SET next_attempt_at=NULL WHERE candidate_id=?", (cid,))
 
     def _advance_audio(self, db, row):
@@ -670,6 +694,21 @@ class ResultPipeline:
         if self._authored_stage(capture_row):
             self._receipt(db, row["candidate_id"], {"authoredStage": True}, "text-delivered")
             return {"candidateId": row["candidate_id"], "status": "text-delivered", "authoredStage": True}
+        if row["original_audio_path"] and self.config.get("audioDeliveryMode", "local") == "central":
+            try:
+                self._verify_immutable_files(row)
+                self._assert_lease()
+                if self._authored_stage(capture_row):
+                    return {"candidateId": row["candidate_id"], "status": "text-delivered", "authoredStage": True}
+                receipt = self._send(metadata_path, row["original_audio_path"])
+                if self._written_item_id(row) != receipt.get("itemId"):
+                    raise PipelineError("original audio sender changed the written item identity")
+                self._receipt(db, row["candidate_id"], receipt, "audio-delivered")
+                return {"candidateId": row["candidate_id"], "status": "audio-delivered", "receipt": receipt}
+            except Exception as exc:
+                db.execute("UPDATE pipeline_candidates SET reason='retry:audio',next_attempt_at=?,updated_at=? WHERE candidate_id=?",
+                           (datetime.fromtimestamp(time.time() + 60, timezone.utc).isoformat().replace("+00:00", "Z"),utc_now(),row["candidate_id"]))
+                return {"candidateId": row["candidate_id"], "status": "text-delivered", "audio": "retryable", "reason": type(exc).__name__}
         if not row["spoken_path"]:
             if row["original_audio_path"]:
                 try:
@@ -678,6 +717,8 @@ class ResultPipeline:
                     if self._authored_stage(capture_row):
                         return {"candidateId": row["candidate_id"], "status": "text-delivered", "authoredStage": True}
                     receipt = self._send(metadata_path, row["original_audio_path"])
+                    if self._written_item_id(row) != receipt.get("itemId"):
+                        raise PipelineError("original audio sender changed the written item identity")
                     self._receipt(db, row["candidate_id"], receipt, "audio-delivered")
                     return {"candidateId": row["candidate_id"], "status": "audio-delivered", "receipt": receipt}
                 except Exception as exc:
@@ -685,6 +726,8 @@ class ResultPipeline:
                                (datetime.fromtimestamp(time.time() + 60, timezone.utc).isoformat().replace("+00:00", "Z"),utc_now(),row["candidate_id"]))
                     return {"candidateId": row["candidate_id"], "status": "text-delivered", "audio": "retryable", "reason": type(exc).__name__}
             return {"candidateId": row["candidate_id"], "status": "text-delivered", "audio": "pending-spoken-adaptation"}
+        if self.config.get("audioDeliveryMode", "local") == "central":
+            return self._request_or_poll_central(db, row)
         try:
             self._verify_immutable_files(row)
             store = self._audio_store()
@@ -710,6 +753,80 @@ class ResultPipeline:
         store = load_audio_module().AudioJobStore(cfg["databaseFile"], cfg["mediaDir"])
         return store
 
+    def _producer_config_path(self):
+        bridge = self.bridge_factory()
+        bridge_config = bridge.load_config(self.config["bridgeConfigFile"])
+        return bridge_config["producerConfigFile"]
+
+    def _central_audio_module(self):
+        return module_from("ai_inbox_pipeline_central_audio", "request-result-audio.py")
+
+    def _written_item_id(self, row):
+        try:
+            receipt = json.loads(row["receipt_json"] or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise PipelineError("written result receipt is invalid") from exc
+        item_id = receipt.get("itemId") if isinstance(receipt, dict) else None
+        if (not isinstance(receipt, dict) or receipt.get("delivered") is not True
+                or not isinstance(item_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", item_id)):
+            raise PipelineError("written result receipt is not confirmed")
+        return item_id
+
+    def _central_audio_result(self, db, row, result):
+        state = result["state"]
+        item_id = result["itemId"]
+        if state in {"ready", "ready_existing"}:
+            receipt = {"delivered": True, "itemId": item_id, "audioDelivered": True}
+            if result.get("mediaSha256"):
+                receipt["audioSha256"] = result["mediaSha256"]
+            if result.get("durationSeconds"):
+                receipt["audioDuration"] = result["durationSeconds"]
+            self._receipt(db, row["candidate_id"], receipt, "audio-delivered")
+            return {"candidateId": row["candidate_id"], "status": "audio-delivered", "itemId": item_id}
+        if state in {"needs_review", "superseded"}:
+            db.execute("UPDATE pipeline_candidates SET status='blocked',central_audio_job_id=?,central_audio_item_id=?,reason=?,updated_at=? WHERE candidate_id=?",
+                       (result.get("jobId"), item_id, "central-audio:" + state, utc_now(), row["candidate_id"]))
+            return {"candidateId": row["candidate_id"], "status": "blocked", "reason": "central-audio:" + state}
+        db.execute("UPDATE pipeline_candidates SET status='audio-pending',central_audio_job_id=?,central_audio_item_id=?,updated_at=? WHERE candidate_id=?",
+                   (result["jobId"], item_id, utc_now(), row["candidate_id"]))
+        self._schedule_audio_retry(db, row["candidate_id"])
+        return {"candidateId": row["candidate_id"], "status": "audio-pending", "centralAudioJobId": result["jobId"]}
+
+    def _request_or_poll_central(self, db, row):
+        capture_row = {"thread_id": row["thread_id"], "run_id": row["run_id"]}
+        if row.get("next_attempt_at") and row["next_attempt_at"] > utc_now():
+            return {"candidateId": row["candidate_id"], "status": "audio-pending", "reason": "central-audio-backoff"}
+        try:
+            self._verify_immutable_files(row)
+            item_id = self._written_item_id(row)
+            if row.get("central_audio_item_id") and row["central_audio_item_id"] != item_id:
+                raise PipelineError("central audio item binding changed")
+            self._assert_lease()
+            if self._authored_stage(capture_row):
+                self._receipt(db, row["candidate_id"], {"authoredStage": True}, "text-delivered")
+                return {"candidateId": row["candidate_id"], "status": "text-delivered", "authoredStage": True}
+            audio_client = self._central_audio_module()
+            if row.get("central_audio_job_id"):
+                result = audio_client.get_audio_status(self._producer_config_path(), row["central_audio_job_id"], item_id)
+            else:
+                result = audio_client.request_audio(self._producer_config_path(), row["metadata_path"],
+                                                   row["spoken_path"], item_id)
+            if self._authored_stage(capture_row):
+                self._receipt(db, row["candidate_id"], {"authoredStage": True}, "text-delivered")
+                return {"candidateId": row["candidate_id"], "status": "text-delivered", "authoredStage": True}
+            return self._central_audio_result(db, row, result)
+        except Exception as exc:
+            client = self._central_audio_module()
+            transient = isinstance(exc, client.AudioRequestError) and exc.transient
+            if transient:
+                db.execute("UPDATE pipeline_candidates SET status='audio-pending',central_audio_item_id=COALESCE(central_audio_item_id,?),updated_at=? WHERE candidate_id=?",
+                           (row.get("central_audio_item_id") or self._written_item_id(row), utc_now(), row["candidate_id"]))
+                self._schedule_audio_retry(db, row["candidate_id"])
+                return {"candidateId": row["candidate_id"], "status": "audio-pending", "reason": "central-audio-temporary"}
+            db.execute("UPDATE pipeline_candidates SET status='blocked',reason=?,updated_at=? WHERE candidate_id=?",
+                       ("central-audio-review:" + type(exc).__name__, utc_now(), row["candidate_id"]))
+            return {"candidateId": row["candidate_id"], "status": "blocked", "reason": "central-audio-review"}
+
     def attach_ready_audio(self, candidate_id: str, *, store=None) -> dict:
         db = _connect(self.config)
         try:
@@ -722,6 +839,18 @@ class ResultPipeline:
             if self._authored_stage(dict(row)):
                 self._receipt(db, candidate_id, {"authoredStage": True}, "text-delivered")
                 return {"candidateId": candidate_id, "status": "text-delivered", "authoredStage": True}
+            if self.config.get("audioDeliveryMode", "local") == "central" and row["original_audio_path"]:
+                self._verify_immutable_files(dict(row))
+                if self._authored_stage(dict(row)):
+                    self._receipt(db, candidate_id, {"authoredStage": True}, "text-delivered")
+                    return {"candidateId": candidate_id, "status": "text-delivered", "authoredStage": True}
+                receipt = self._send(row["metadata_path"], row["original_audio_path"])
+                if self._written_item_id(dict(row)) != receipt.get("itemId"):
+                    raise PipelineError("original audio sender changed the written item identity")
+                self._receipt(db, candidate_id, receipt, "audio-delivered")
+                return {"candidateId": candidate_id, "status": "audio-delivered", "receipt": receipt}
+            if self.config.get("audioDeliveryMode", "local") == "central":
+                return self._request_or_poll_central(db, dict(row))
             if not row["audio_job_id"] and row["original_audio_path"] and not row["spoken_path"]:
                 self._verify_immutable_files(dict(row))
                 self._assert_lease()
@@ -779,7 +908,12 @@ class ResultPipeline:
             db.close()
 
     def run_audio_once(self) -> dict | None:
-        """Claim and invoke at most one paid audio job. Uncertain states stay terminal."""
+        """Reconcile central status or claim at most one local synthesis job."""
+        if self.config.get("audioDeliveryMode", "local") == "central":
+            completed = []
+            for candidate_id in _audio_candidate_ids(self.config, 10):
+                completed.append(self.attach_ready_audio(candidate_id))
+            return {"mode": "central", "reconciled": len(completed), "results": completed}
         lease_db = _connect(self.config)
         if not self._lease(lease_db, lease_seconds=MAX_LEASE):
             lease_db.close()

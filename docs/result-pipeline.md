@@ -20,6 +20,7 @@ or directories. The pipeline config has these required fields:
   "bridgeConfigFile": "/private/t3-results.json",
   "stateDir": "/private/result-pipeline",
   "decisionHelperArgv": ["/usr/bin/python3", "/private/trusted-classifier.py"],
+  "audioDeliveryMode": "local",
   "audioHelperConfigFile": "/private/audio-helper.json",
   "voiceProfileSha256": "64-lowercase-hex-characters",
   "decisionHelperTimeoutSeconds": 60
@@ -29,10 +30,22 @@ or directories. The pipeline config has these required fields:
 `captureConfigFile` refers to the already initialized future capture adapter.
 The pipeline does not call capture `init`, change its activation epoch, or scan
 before that epoch. The bridge config supplies the existing producer config and
-its allowed audio roots. `audioHelperConfigFile` supplies the existing audio job
-database/media paths, fixed helper argv/path, non-secret profile reference and
-timeout in the shape consumed by `audio-jobs.py`. `voiceProfileSha256` is the
-configured voice identity used by the queue.
+its allowed audio roots. `audioDeliveryMode` is optional and defaults to
+`local`. Accepted values are `local` and `central`. Local mode preserves the
+existing behavior: `audioHelperConfigFile` supplies the audio job database/media
+paths, fixed helper argv/path, non-secret profile reference and timeout in the
+shape consumed by `audio-jobs.py`; `voiceProfileSha256` identifies the configured
+voice.
+
+Central mode needs neither `audioHelperConfigFile` nor `voiceProfileSha256`. The
+producer config referenced by the bridge supplies the HTTPS `/api/results`
+endpoint and private token file. After a successful text receipt binds a valid
+Inbox item ID, the pipeline sends the exact immutable metadata body hash and
+spoken adaptation to the same-origin central audio API. The server attaches
+generated audio to that existing item. Central mode never opens the local
+`AudioJobStore` or invokes Cartesia. See
+[`request-result-audio.md`](request-result-audio.md) for endpoint validation,
+response validation and retry behavior.
 
 The classifier adapter is trusted local code and is not yet provided or
 activated by this module. Its fixed argument vector is invoked with `shell=False`;
@@ -104,6 +117,8 @@ text is needed for staged capture rows.
 
 The private pipeline SQLite journal records one row per candidate, immutable
 candidate/decision/metadata/spoken hashes, status and capped producer receipt.
+Additive `central_audio_job_id` and `central_audio_item_id` columns bind a
+central status poll to the item ID from the successful written-send receipt.
 Statuses are `candidate-reviewed`, `excluded`, `review-needed`,
 `text-delivered`, `audio-pending`, `audio-ready`, `audio-delivered`, and
 `blocked`. SQLite writes are short and do not span T3 fetches, classifier
@@ -119,22 +134,27 @@ match the audio job's recorded media hash. Receipt serialization is bounded as
 structured JSON rather than truncating JSON bytes. Candidate failures are
 isolated so later candidates in the same batch still run.
 
-Text is sent without audio first. When `spokenText` exists, it is enqueued under
-the same result identity in `AudioJobStore`; a specifically selected original
-MP3 may be reused only after path, allowed-root and exact hash checks. No archive
-search or newest-file selection occurs. If there is no spoken adaptation, text
-remains delivered. A specifically selected original MP3 is attached after text
-with the same delivery ID and without synthesis. Otherwise audio remains
-pending for a future reviewed preparation step.
-Use `audio-once` to invoke at most one configured `AudioJobStore.run_one` helper
-claim in an invocation. The job store's `uncertain` and `blocked` results are
-never retried automatically. A ready recording is sent with the same delivery
-ID. Its metadata is derived from the immutable text metadata; duration is added
-only when the ready audio job supplies a validated positive duration. The
-immutable base metadata and its hash remain unchanged. Existing inbox upsert
-semantics attach that audio without resetting owner read/archive state. The authored-stage check is repeated
-immediately before the audio send, so an explicit recording or authored result
-is not replaced by the pipeline.
+Text is sent without audio first. A specifically selected original MP3 is
+attached to that same result after checking its allowed root and exact hash; it
+always takes precedence over speech generation. No archive search or newest-file
+selection occurs. If there is no spoken adaptation, text remains delivered. In
+local mode, spoken text is enqueued under the same result identity in
+`AudioJobStore`. `audio-once` may claim at most one configured helper job;
+uncertain and blocked jobs are never retried automatically. A ready recording
+is sent with the same delivery ID, and only a validated positive duration is
+added to a derived audio receipt. Existing Inbox upsert semantics preserve
+read/archive state.
+
+In central mode, `audio-once` reconciles central jobs through the existing
+bounded audio cursor. It does not call the local helper. If the initial POST
+response was lost, a due audio pass resubmits the same immutable payload until
+it can save the job binding; the backend's deterministic job identity makes
+that safe. Pending jobs retain their job and item IDs. `ready` and
+`ready_existing` mark audio complete on the same item; `needs_review` and
+`superseded` become terminal blocked rows and are not resubmitted. Transient
+service errors use the existing capped audio backoff. The exact authored-stage
+check runs before each central request/status operation and before an original
+recording upload.
 
 ```sh
 python3 scripts/result-pipeline.py --config /private/result-pipeline.json audio-once

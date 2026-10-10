@@ -176,6 +176,199 @@ class ResultPipelineTests(unittest.TestCase):
         self.assertEqual(metadata["deliveryId"], pipeline_module.stable_delivery_id("thread-1", "run-7"))
         self.assertEqual(self.context["exact_runs"], ["run-7"])
 
+    def _central_mode_pipeline(self, client):
+        central = dict(self.config, audioDeliveryMode="central")
+        central.pop("audioHelperConfigFile", None)
+        central.pop("voiceProfileSha256", None)
+        self.config = central
+        pipeline = self._pipeline()
+        pipeline.config = central
+        pipeline._central_audio_module = lambda: client
+        return pipeline
+
+    def test_central_mode_uses_written_item_and_never_opens_local_audio_store(self):
+        class Client:
+            def __init__(self): self.posts = []; self.statuses = []
+            def request_audio(_self, _config, metadata_path, spoken_path, item_id):
+                _self.posts.append((Path(metadata_path).read_bytes(), Path(spoken_path).read_bytes(), item_id))
+                return {"state": "queued", "jobId": "a" * 64, "itemId": item_id}
+            def get_audio_status(_self, _config, job_id, item_id):
+                _self.statuses.append((job_id, item_id))
+                return {"state": "ready", "jobId": job_id, "itemId": item_id,
+                        "mediaSha256": "b" * 64, "durationSeconds": 9.25}
+        client = Client()
+        pipeline = self._central_mode_pipeline(client)
+        result = pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "audio-pending")
+        self.assertEqual(self.store.calls, 0)
+        self.assertEqual(len(client.posts), 1)
+        metadata_raw, spoken_raw, item_id = client.posts[0]
+        self.assertEqual(item_id, "item-1")
+        self.assertEqual(json.loads(metadata_raw)["body"], self.context["text"])
+        self.assertEqual(spoken_raw.decode(), self.decision["spokenText"])
+        db = pipeline_module._connect(pipeline.config)
+        try:
+            row = dict(db.execute("SELECT * FROM pipeline_candidates WHERE candidate_id=?",
+                                  (self.row["candidate_id"],)).fetchone())
+        finally:
+            db.close()
+        self.assertEqual(row["central_audio_job_id"], "a" * 64)
+        self.assertEqual(row["central_audio_item_id"], "item-1")
+        db = pipeline_module._connect(pipeline.config)
+        try:
+            db.execute("UPDATE pipeline_candidates SET next_attempt_at='2000-01-01T00:00:00Z' WHERE candidate_id=?",
+                       (self.row["candidate_id"],))
+        finally:
+            db.close()
+        attached = pipeline.attach_ready_audio(self.row["candidate_id"])
+        self.assertEqual(attached["status"], "audio-delivered")
+        self.assertEqual(client.statuses, [("a" * 64, "item-1")])
+        self.assertEqual(self.sender_calls, [(pipeline_module.stable_delivery_id("thread-1", "run-7"), None)])
+        self.assertEqual(self.store.calls, 0)
+
+    def test_central_lost_post_reply_retries_identical_payload_and_job_binding(self):
+        client_module = pipeline_module.module_from("ai_inbox_test_central_audio", "request-result-audio.py")
+        class Client:
+            AudioRequestError = client_module.AudioRequestError
+            def __init__(self): self.payloads = []
+            def request_audio(_self, _config, metadata_path, spoken_path, item_id):
+                payload = (Path(metadata_path).read_bytes(), Path(spoken_path).read_bytes(), item_id)
+                _self.payloads.append(payload)
+                if len(_self.payloads) == 1:
+                    raise client_module.AudioRequestError("temporary", transient=True)
+                return {"state": "generating", "jobId": "c" * 64, "itemId": item_id}
+            def get_audio_status(*_args): raise AssertionError("no job should be polled yet")
+        client = Client()
+        pipeline = self._central_mode_pipeline(client)
+        self.assertEqual(pipeline.process_candidate(self.row["candidate_id"])["status"], "audio-pending")
+        db = pipeline_module._connect(pipeline.config)
+        try:
+            db.execute("UPDATE pipeline_candidates SET next_attempt_at='2000-01-01T00:00:00Z' WHERE candidate_id=?",
+                       (self.row["candidate_id"],))
+        finally:
+            db.close()
+        result = pipeline.run_audio_once()
+        self.assertEqual(result["reconciled"], 1)
+        self.assertEqual(result["results"][0]["status"], "audio-pending")
+        self.assertEqual(client.payloads[0], client.payloads[1])
+        db = pipeline_module._connect(pipeline.config)
+        try:
+            row = db.execute("SELECT central_audio_job_id,central_audio_item_id FROM pipeline_candidates WHERE candidate_id=?",
+                             (self.row["candidate_id"],)).fetchone()
+        finally:
+            db.close()
+        self.assertEqual(tuple(row), ("c" * 64, "item-1"))
+
+    def test_original_audio_with_spoken_text_uploads_original_and_skips_central_request(self):
+        original = self.audio_root / "original-wins.mp3"
+        original.write_bytes(b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x64" + b"\x00" * 413)
+        original.chmod(0o600)
+        digest = hashlib.sha256(original.read_bytes()).hexdigest()
+        self.decision = self._meaningful_decision(originalAudio={"path": str(original), "sha256": digest})
+        class Client:
+            calls = 0
+            def request_audio(self, *_args): self.calls += 1; raise AssertionError("central synthesis must not be requested")
+        client = Client()
+        pipeline = self._central_mode_pipeline(client)
+        result = pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "audio-delivered")
+        self.assertEqual(client.calls, 0)
+        self.assertEqual([call[1] for call in self.sender_calls], [None, str(original)])
+        self.assertEqual(self.deliveries[pipeline_module.stable_delivery_id("thread-1", "run-7")]["audio"], original.read_bytes())
+        self.assertEqual(self.store.calls, 0)
+
+    def test_central_ready_existing_completes_same_item_without_audio_resend(self):
+        class Client:
+            def request_audio(_self, _config, _metadata, _spoken, item):
+                return {"state": "ready_existing", "itemId": item}
+        pipeline = self._central_mode_pipeline(Client())
+        result = pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "audio-delivered")
+        self.assertEqual(result["itemId"], "item-1")
+        self.assertEqual(len(self.sender_calls), 1)
+        db = pipeline_module._connect(pipeline.config)
+        try:
+            row = db.execute("SELECT receipt_json,central_audio_item_id FROM pipeline_candidates WHERE candidate_id=?",
+                             (self.row["candidate_id"],)).fetchone()
+        finally:
+            db.close()
+        receipt = json.loads(row["receipt_json"])
+        self.assertEqual(receipt["itemId"], "item-1")
+        self.assertTrue(receipt["audioDelivered"])
+        self.assertEqual(row["central_audio_item_id"], "item-1")
+        self.assertNotIn("audioSha256", receipt)
+
+    def test_central_terminal_review_does_not_poll_or_resubmit(self):
+        client_module = pipeline_module.module_from("ai_inbox_test_central_audio_2", "request-result-audio.py")
+        class Client:
+            def __init__(self): self.posts = 0; self.gets = 0
+            def request_audio(_self, _config, _metadata, _spoken, item):
+                _self.posts += 1
+                return {"state": "queued", "jobId": "d" * 64, "itemId": item}
+            def get_audio_status(_self, _config, job, item):
+                _self.gets += 1
+                return {"state": "needs_review", "jobId": job, "itemId": item}
+        client = Client()
+        pipeline = self._central_mode_pipeline(client)
+        pipeline.process_candidate(self.row["candidate_id"])
+        db = pipeline_module._connect(pipeline.config)
+        try:
+            db.execute("UPDATE pipeline_candidates SET next_attempt_at='2000-01-01T00:00:00Z' WHERE candidate_id=?",
+                       (self.row["candidate_id"],))
+        finally:
+            db.close()
+        self.assertEqual(pipeline.attach_ready_audio(self.row["candidate_id"])["status"], "blocked")
+        self.assertEqual(pipeline.process_candidate(self.row["candidate_id"])["status"], "blocked")
+        self.assertEqual((client.posts, client.gets), (1, 1))
+
+    def test_central_audio_once_only_polls_saved_jobs(self):
+        class Client:
+            AudioRequestError = pipeline_module.module_from("ai_inbox_test_audio_once", "request-result-audio.py").AudioRequestError
+            def __init__(self): self.posts = 0; self.gets = 0
+            def request_audio(_self, _config, _metadata, _spoken, item):
+                _self.posts += 1
+                return {"state": "queued", "jobId": "e" * 64, "itemId": item}
+            def get_audio_status(_self, _config, job, item):
+                _self.gets += 1
+                return {"state": "generating", "jobId": job, "itemId": item}
+        client = Client()
+        pipeline = self._central_mode_pipeline(client)
+        self.assertEqual(pipeline.process_candidate(self.row["candidate_id"])["status"], "audio-pending")
+        db = pipeline_module._connect(pipeline.config)
+        try:
+            db.execute("UPDATE pipeline_candidates SET next_attempt_at='2000-01-01T00:00:00Z' WHERE candidate_id=?",
+                       (self.row["candidate_id"],))
+        finally:
+            db.close()
+        output = pipeline.run_audio_once()
+        self.assertEqual(output["mode"], "central")
+        self.assertEqual((client.posts, client.gets), (1, 1))
+        self.assertEqual(self.store.calls, 0)
+
+    def test_load_config_allows_central_mode_without_local_audio_settings(self):
+        config_path = self._private("central-pipeline.json", {
+            "captureConfigFile": str(self.capture_config), "bridgeConfigFile": str(self.bridge_config),
+            "stateDir": str(self.private / "central-state"), "decisionHelperArgv": ["/usr/bin/fake-decision"],
+            "audioDeliveryMode": "central",
+        })
+        loaded = pipeline_module.load_config(config_path)
+        self.assertEqual(loaded["audioDeliveryMode"], "central")
+        self.assertNotIn("audioHelperConfigFile", loaded)
+        self.assertNotIn("voiceProfileSha256", loaded)
+
+    def test_sender_false_receipt_never_marks_text_delivered(self):
+        self.pipeline.sender = lambda *_args: {"delivered": False, "itemId": "item-1"}
+        result = self.pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "review-needed")
+        db = pipeline_module._connect(self.config)
+        try:
+            row = db.execute("SELECT status,receipt_json FROM pipeline_candidates WHERE candidate_id=?",
+                             (self.row["candidate_id"],)).fetchone()
+        finally:
+            db.close()
+        self.assertEqual(row["status"], "review-needed")
+        self.assertNotIn('"delivered":true', row["receipt_json"] or "")
+
     def test_exact_run_gate_failure_does_not_publish_or_rebind_to_latest(self):
         self.context["gate_error"] = "exact run incomplete"
         result = self.pipeline.process_candidate(self.row["candidate_id"])
@@ -379,11 +572,11 @@ class ResultPipelineTests(unittest.TestCase):
         try:
             self.pipeline._save_simple(db, self.row, self.row["candidate_id"], "0" * 64,
                 pipeline_module.stable_delivery_id("thread-1", "run-7"), "candidate-reviewed", "fixture")
-            self.pipeline._receipt(db, self.row["candidate_id"], {"delivered": True, "itemId": "x" * 50_000}, "text-delivered")
+            with self.assertRaises(pipeline_module.PipelineError):
+                self.pipeline._receipt(db, self.row["candidate_id"], {"delivered": True, "itemId": "x" * 50_000}, "text-delivered")
             stored = db.execute("SELECT receipt_json FROM pipeline_candidates WHERE candidate_id=?",
                                 (self.row["candidate_id"],)).fetchone()[0]
-            self.assertLess(len(stored), 100)
-            self.assertTrue(json.loads(stored)["delivered"])
+            self.assertIsNone(stored)
         finally:
             db.close()
 
