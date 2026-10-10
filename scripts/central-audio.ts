@@ -1,6 +1,6 @@
 import { openDatabase } from '../src/server/db';
 import { ApiError } from '../src/server/items';
-import { attachWorkerMedia, getWorkerRequest, listWorkerRequests, resolveWorkerRequest, updateWorkerRequest } from '../src/server/central-audio';
+import { attachWorkerMedia, getWorkerRequest, listWorkerRequests, requeueReviewedWorkerRequest, resolveWorkerRequest, updateWorkerRequest } from '../src/server/central-audio';
 
 const INPUT_LIMIT=64*1024;
 async function stdinJson():Promise<unknown> {
@@ -41,6 +41,11 @@ async function main() {
           ||(input.state!=='needs_review'&&input.state!=='superseded')
           ||(input.safeErrorCode!==undefined&&input.safeErrorCode!==null&&typeof input.safeErrorCode!=='string')) throw new ApiError(400,'Invalid worker resolution');
       result=resolveWorkerRequest(db,{requestId:input.requestId,expectedState:input.expectedState as 'queued'|'generating',expectedBodySha256:input.expectedBodySha256,state:input.state,safeErrorCode:input.safeErrorCode as string|null|undefined});
+    } else if(input.op==='review-retry') {
+      exactKeys(input,['op','requestId','ledgerJobId','expectedBodySha256']);
+      if(typeof input.requestId!=='string'||typeof input.ledgerJobId!=='string'||typeof input.expectedBodySha256!=='string')
+        throw new ApiError(400,'Invalid reviewed audio retry');
+      result=requeueReviewedWorkerRequest(db,{requestId:input.requestId,ledgerJobId:input.ledgerJobId,expectedBodySha256:input.expectedBodySha256});
     } else if(input.op==='update') {
       if(Object.keys(input).some(key=>!['op','requestId','ledgerJobId','state','safeErrorCode'].includes(key))
           ||!['op','requestId','ledgerJobId','state'].every(key=>key in input)) throw new ApiError(400,'Invalid worker update');

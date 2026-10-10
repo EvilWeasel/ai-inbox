@@ -218,6 +218,28 @@ export function resolveWorkerRequest(db:InboxDatabase,input:{requestId:string;ex
   }).immediate();
 }
 
+/** Requeue one request only after the bound ledger job has an explicit review. */
+export function requeueReviewedWorkerRequest(db:InboxDatabase,input:{requestId:string;ledgerJobId:string;expectedBodySha256:string}) {
+  if(!HEX.test(input.requestId)||! /^[A-Za-z0-9._:-]{1,256}$/.test(input.ledgerJobId)||!HEX.test(input.expectedBodySha256))
+    throw new ApiError(400,'Invalid reviewed audio retry');
+  return db.sqlite.transaction(()=>{
+    const row=db.sqlite.prepare('SELECT * FROM central_audio_requests WHERE id=?').get(input.requestId) as RequestRow|undefined;
+    if(!row) throw new ApiError(404,'Audio job not found');
+    if(row.state!=='needs_review'||row.ledger_job_id!==input.ledgerJobId||row.body_sha256!==input.expectedBodySha256)
+      throw new ApiError(409,'Audio review state conflict');
+    const item=db.sqlite.prepare('SELECT kind,external_id,body,audio_file FROM items WHERE id=?').get(row.item_id) as
+      {kind:string;external_id:string;body:string;audio_file:string|null}|undefined;
+    if(!item||item.kind!=='result'||item.external_id!==`producer:${row.producer_id}:delivery:${row.delivery_id}`)
+      throw new ApiError(404,'Result not found');
+    if(sha256(item.body)!==input.expectedBodySha256||item.audio_file!==null)
+      throw new ApiError(409,'Audio result changed');
+    const changed=db.sqlite.prepare(`UPDATE central_audio_requests SET state='queued',safe_error_code=NULL,updated_at=?
+      WHERE id=? AND state='needs_review' AND ledger_job_id=? AND body_sha256=?`).run(now(),input.requestId,input.ledgerJobId,input.expectedBodySha256);
+    if(!changed.changes) throw new ApiError(409,'Audio review state conflict');
+    return {state:'queued' as const};
+  }).immediate();
+}
+
 async function readPrivateMp3(source:string) {
   const { lstat, open, realpath } = await import('node:fs/promises');
   const { constants } = await import('node:fs');

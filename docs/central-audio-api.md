@@ -101,6 +101,24 @@ request ID, expected state and body hash must still match. `superseded` also
 requires the current item body or audio to prove obsolescence. These conditional
 operations cannot revive a ready or superseded request.
 
+A reviewed recovery of a request already in `needs_review` uses the local-only
+`review-retry` operation after `AudioJobStore.resolve(decision="retry", ...)`
+has recorded the reviewer and evidence against the exact bound ledger job:
+
+```json
+{"op":"review-retry","requestId":"<job id>","ledgerJobId":"<bound ledger id>","expectedBodySha256":"<body hash>"}
+```
+
+This operation requires the request to remain `needs_review`, its ledger binding
+and body hash to match, and the associated result to retain that exact body with
+no attached audio. It atomically returns the request to `queued`, clears its
+safe error code and increments the normal inbox revision. It does not make a
+provider call. The worker still owns the attempt and applies the ledger's
+claim limit; a failed or uncertain attempt returns to `needs_review` and is
+never retried automatically. Use this only for one specifically reviewed
+request at a time, and do not infer that a historical provider call did not
+occur from a missing local receipt.
+
 Bind a job to the existing durable Python ledger before progressing it:
 
 ```json

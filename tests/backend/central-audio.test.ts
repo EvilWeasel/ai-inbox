@@ -213,6 +213,27 @@ test('unbound worker resolution is conditional and cannot revive superseded requ
   assert.equal((db.sqlite.prepare('SELECT state FROM central_audio_requests WHERE id=?').get(request.jobId!) as {state:string}).state,'needs_review');
 });
 
+test('reviewed retry preserves identity and rejects stale bodies, other ledgers and existing audio',async()=>{
+  const {requeueReviewedWorkerRequest}=await import('../../src/server/central-audio');
+  const metadata={deliveryId:'review-retry',title:'Reviewed recovery',body,resultType:'report' as const,origin:{host:producer.host},publishedAt:'2026-10-10T14:15:00Z',phase:'final' as const};
+  const item=await ingestResult(db,producer,metadata,null);
+  const request=createAudioRequest(db,producer,audioInput(metadata.deliveryId));
+  const input={requestId:request.jobId!,ledgerJobId:'review-ledger',expectedBodySha256:bodySha};
+  assert.throws(()=>requeueReviewedWorkerRequest(db,input),/conflict/);
+  updateWorkerRequest(db,{requestId:request.jobId!,ledgerJobId:input.ledgerJobId,state:'needs_review'});
+  assert.throws(()=>requeueReviewedWorkerRequest(db,{...input,ledgerJobId:'other-ledger'}),/conflict/);
+  db.sqlite.prepare('UPDATE items SET body=? WHERE id=?').run('changed',item.item.id);
+  assert.throws(()=>requeueReviewedWorkerRequest(db,input),/changed/);
+  db.sqlite.prepare('UPDATE items SET body=?,audio_file=? WHERE id=?').run(body,'existing.mp3',item.item.id);
+  assert.throws(()=>requeueReviewedWorkerRequest(db,input),/changed/);
+  db.sqlite.prepare('UPDATE items SET audio_file=NULL,read_at=?,archived_at=? WHERE id=?').run('2026-10-10T15:00:00Z','2026-10-10T15:01:00Z',item.item.id);
+  const before=(db.sqlite.prepare('SELECT revision FROM inbox_revision').get() as {revision:number}).revision;
+  assert.deepEqual(requeueReviewedWorkerRequest(db,input),{state:'queued'});
+  assert.equal((db.sqlite.prepare('SELECT revision FROM inbox_revision').get() as {revision:number}).revision,before+1);
+  assert.deepEqual(db.sqlite.prepare('SELECT read_at,archived_at FROM items WHERE id=?').get(item.item.id),{read_at:'2026-10-10T15:00:00Z',archived_at:'2026-10-10T15:01:00Z'});
+  assert.throws(()=>requeueReviewedWorkerRequest(db,input),/conflict/);
+});
+
 test('ready attachment retry detects later written revision or original media before returning ready',async()=>{
   const metadata={deliveryId:'ready-race',title:'Ready race',body,resultType:'report' as const,origin:{host:producer.host},publishedAt:'2026-10-10T14:20:00Z',phase:'final' as const};
   const item=await ingestResult(db,producer,metadata,null);
