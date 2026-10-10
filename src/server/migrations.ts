@@ -122,7 +122,46 @@ export function migrate(sqlite: Database.Database) {
         OR old.audio_file IS NOT new.audio_file OR old.audio_duration IS NOT new.audio_duration
         OR old.read_at IS NOT new.read_at OR old.archived_at IS NOT new.archived_at OR old.provenance IS NOT new.provenance
       BEGIN UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1; END;
-      INSERT INTO inbox_migrations(version) VALUES(3);
+    INSERT INTO inbox_migrations(version) VALUES(3);
+    `);
+  }).immediate();
+  sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM inbox_migrations WHERE version=4').get()) return;
+    // Central audio is additive: requests point at an existing result and never
+    // change item identity or owner state. State transitions share the inbox
+    // revision so SSE clients see queued/ready/review changes atomically.
+    sqlite.exec(`
+      CREATE TABLE central_audio_requests (
+        id TEXT PRIMARY KEY NOT NULL CHECK(length(id)=64),
+        producer_id TEXT NOT NULL,
+        delivery_id TEXT NOT NULL,
+        item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+        body_sha256 TEXT NOT NULL CHECK(length(body_sha256)=64),
+        spoken_sha256 TEXT NOT NULL CHECK(length(spoken_sha256)=64),
+        voice_profile_sha256 TEXT NOT NULL CHECK(length(voice_profile_sha256)=64),
+        spoken_text TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('queued','generating','ready','needs_review','superseded')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        ledger_job_id TEXT,
+        media_sha256 TEXT CHECK(media_sha256 IS NULL OR length(media_sha256)=64),
+        duration REAL CHECK(duration IS NULL OR (duration>=0 AND duration<1e9)),
+        safe_error_code TEXT
+      );
+      CREATE UNIQUE INDEX central_audio_identity ON central_audio_requests(id);
+      CREATE UNIQUE INDEX central_audio_item_profile
+        ON central_audio_requests(item_id,body_sha256,voice_profile_sha256);
+      CREATE INDEX central_audio_queue ON central_audio_requests(state,created_at,id)
+        WHERE state IN ('queued','generating');
+      CREATE INDEX central_audio_item_state ON central_audio_requests(item_id,state,updated_at);
+      CREATE TRIGGER central_audio_revision_insert AFTER INSERT ON central_audio_requests BEGIN
+        UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1;
+      END;
+      CREATE TRIGGER central_audio_revision_state AFTER UPDATE OF state ON central_audio_requests
+      WHEN old.state IS NOT new.state BEGIN
+        UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1;
+      END;
+      INSERT INTO inbox_migrations(version) VALUES(4);
     `);
   }).immediate();
 }

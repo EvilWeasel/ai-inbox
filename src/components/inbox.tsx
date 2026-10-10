@@ -30,6 +30,7 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DetailPlayControl } from "@/components/audio-player";
+import { AudioJobStatus } from "@/components/audio-job-status";
 import { useInboxEvents } from "@/components/use-inbox-events";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -814,6 +815,9 @@ export function Inbox() {
                         <span className="item-foot">
                           {item.kind === "briefing" && item.edition && <span>{item.edition[0].toUpperCase() + item.edition.slice(1)} edition</span>}
                           {item.archivedAt && <span>Archived</span>}
+                          {item.kind === "result" && !item.audioAvailable && item.audioStatus && item.audioStatus !== "ready" && (
+                            <AudioJobStatus status={item.audioStatus} variant="compact" />
+                          )}
                         </span>
                       </button>
                     </li>
@@ -986,7 +990,9 @@ export function Inbox() {
                           </Button>
                         </div>
                       )}
-                      <DetailPlayControl item={detail} />
+                      {detail.kind === "result" && !detail.audioAvailable && detail.audioStatus && detail.audioStatus !== "ready"
+                        ? <AudioJobStatus status={detail.audioStatus} />
+                        : <DetailPlayControl item={detail} />}
                       <MarkdownBody body={readingBody(detail)} />
                       {detail.tags.length > 0 && (
                         <div className="tags" aria-label="Tags">

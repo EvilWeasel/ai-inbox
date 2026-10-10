@@ -19,6 +19,7 @@ export const itemSchema = z.object({
   edition: z.enum(['morning', 'evening']).nullable(), publishedAt: z.string(),
   body: z.string(), summary: z.string(), sources: z.array(sourceSchema),
   audioAvailable: z.boolean(), audioDuration: z.number().nullable(),
+  audioStatus: z.enum(['queued','generating','ready','needs_review','superseded']).nullable().optional(),
   readAt: z.string().nullable(), archivedAt: z.string().nullable(), tags: z.array(z.string()),
 });
 export type InboxItem = z.infer<typeof itemSchema>;

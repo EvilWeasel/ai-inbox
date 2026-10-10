@@ -7,14 +7,19 @@ import { items } from './schema';
 
 export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
 type Row = typeof items.$inferSelect;
-export function publicItem(row: Row): InboxItem {
+export function publicItem(row: Row, audioStatus: InboxItem['audioStatus'] = null): InboxItem {
   return { id:row.id,title:row.title,kind:row.kind,resultType:row.resultType,origin:row.origin,edition:row.edition,publishedAt:row.publishedAt,
     body:row.body,summary:row.summary,sources:row.sources,tags:row.tags,audioAvailable:!!row.audioFile,
-    audioDuration:row.audioDuration,readAt:row.readAt,archivedAt:row.archivedAt };
+    audioDuration:row.audioDuration,audioStatus,readAt:row.readAt,archivedAt:row.archivedAt };
 }
 export function getRow(db: InboxDatabase, id: string) { return db.orm.select().from(items).where(eq(items.id,id)).get(); }
 export function detail(db: InboxDatabase, id: string) {
-  const row = getRow(db,id); if (!row) throw new ApiError(404,'Item not found'); return publicItem(row);
+  const row = getRow(db,id); if (!row) throw new ApiError(404,'Item not found');
+  const request = db.sqlite.prepare(`SELECT state,body_sha256 FROM central_audio_requests
+    WHERE item_id=? ORDER BY updated_at DESC,created_at DESC,id DESC LIMIT 1`).get(id) as {state:InboxItem['audioStatus'];body_sha256:string}|undefined;
+  let audioStatus: InboxItem['audioStatus'] = row.audioFile ? 'ready' : (request?.state ?? null);
+  if (request && request.body_sha256 !== createHash('sha256').update(row.body,'utf8').digest('hex') && !row.audioFile) audioStatus='superseded';
+  return publicItem(row,audioStatus);
 }
 export function patchItem(db: InboxDatabase, id: string, input: unknown) {
   const patch = patchSchema.parse(input);

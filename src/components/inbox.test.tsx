@@ -51,6 +51,7 @@ const fixture: InboxItem = {
   sources: [{ title: "Official source", url: "https://example.org/release" }],
   audioAvailable: true,
   audioDuration: 125,
+  audioStatus: "ready",
   readAt: null,
   archivedAt: null,
   tags: ["test"],
@@ -263,6 +264,39 @@ describe("inbox API interactions", () => {
     expect(screen.getAllByText("Agent result").length).toBeGreaterThan(0);
     expect(screen.queryByLabelText("Result origin")).toBeNull();
     expect(screen.queryByRole("link", { name: /Open source thread/ })).toBeNull();
+  });
+  it("shows truthful unavailable states and keeps legacy results readable", async () => {
+    const needsReview = {
+      ...resultFixture,
+      audioAvailable: false,
+      audioDuration: null,
+      audioStatus: "needs_review" as const,
+      body: "The full written result remains available while its recording is reviewed.",
+    };
+    fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
+      ? response(result(needsReview)) : response({ item: needsReview }));
+    route("item=agent-result");
+    render(<Inbox />);
+    await screen.findByRole("heading", { name: needsReview.title });
+    expect(screen.getAllByLabelText("Audio needs attention").length).toBeGreaterThan(0);
+    expect(screen.getByText("The recording is not ready. Your written result is available to read.")).toBeTruthy();
+    expect(screen.getByText(needsReview.body)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Play .*cache invalidation/ })).toBeNull();
+
+    const superseded = { ...needsReview, audioStatus: "superseded" as const };
+    fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
+      ? response(result(superseded)) : response({ item: superseded }));
+    await act(async () => serverChange());
+    await screen.findAllByText("Audio unavailable for this version");
+    expect(screen.queryByRole("button", { name: /Play .*cache invalidation/ })).toBeNull();
+
+    const legacy = { ...needsReview, audioStatus: undefined };
+    fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
+      ? response(result(legacy)) : response({ item: legacy }));
+    await act(async () => serverChange());
+    await screen.findByText("Audio is not available for this item.");
+    expect(screen.queryAllByText(/Audio queued|Preparing audio|Audio needs attention|Audio unavailable for this version/)).toHaveLength(0);
+    expect(screen.getByText(legacy.body)).toBeTruthy();
   });
   it("keeps result audio loaded while opening another item", async () => {
     let paused = true;
@@ -687,6 +721,48 @@ describe("Inbox playback navigation", () => {
 });
 
 describe("live invalidation integration", () => {
+  it("reveals playback when queued audio becomes ready without autoplaying or replacing the current track", async () => {
+    let report: InboxItem = {
+      ...resultFixture,
+      audioAvailable: false,
+      audioDuration: null,
+      audioStatus: "queued" as const,
+    };
+    let paused = true;
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockImplementation(async () => { paused = false; });
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => { paused = true; });
+    vi.spyOn(HTMLMediaElement.prototype, "paused", "get").mockImplementation(() => paused);
+    fetchMock.mockImplementation(async url => {
+      const value = String(url);
+      if (value.startsWith("/api/items?"))
+        return response({ items: [report, fixture], nextCursor: null, counts: { inbox: 2, unread: 2, archive: 0 }, total: 2 });
+      return response({ item: value.includes("test-item") ? fixture : report });
+    });
+    route("item=agent-result");
+    render(<Inbox />);
+    await screen.findByRole("heading", { name: report.title });
+    expect(screen.getAllByText("Audio queued").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: /Test release/ }));
+    await screen.findByRole("heading", { name: fixture.title });
+    fireEvent.click(screen.getByRole("button", { name: "Play Test release" }));
+    await screen.findByRole("button", { name: "Pause audio" });
+    const audio = screen.getByLabelText("Inbox audio") as HTMLAudioElement;
+    audio.currentTime = 38;
+    fireEvent.click(screen.getByRole("button", { name: /Implemented cache invalidation/ }));
+    await screen.findByRole("heading", { name: report.title });
+    const playCount = play.mock.calls.length;
+    const pauseCount = pause.mock.calls.length;
+
+    report = { ...report, audioAvailable: true, audioDuration: 95, audioStatus: "ready" };
+    await act(async () => serverChange());
+    await screen.findByRole("button", { name: "Play Implemented cache invalidation" });
+
+    expect(screen.getByLabelText("Inbox audio")).toBe(audio);
+    expect(audio.getAttribute("src")).toBe("/api/items/test-item/audio");
+    expect(audio.currentTime).toBe(38);
+    expect(play).toHaveBeenCalledTimes(playCount);
+    expect(pause).toHaveBeenCalledTimes(pauseCount);
+  });
   it("defers an event during a write and updates selected detail outside the list", async () => {
     route("item=test-item");
     let finishPatch!: (value: Response) => void;
