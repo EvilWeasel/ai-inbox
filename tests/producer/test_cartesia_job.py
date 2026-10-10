@@ -278,7 +278,7 @@ class CartesiaJobTests(unittest.TestCase):
                                       stdout_limit=64, stderr_limit=64)
 
     def test_real_speak_splitter_accepts_one_chunk_and_rejects_multiple_without_rendering(self):
-        real_helper = Path("/home/evilweasel/.codex/skills/cartesia-audio/scripts/speak.py")
+        real_helper = Path.home() / ".codex/skills/cartesia-audio/scripts/speak.py"
         if not real_helper.is_file():
             self.skipTest("official Cartesia helper is unavailable")
         helper = cartesia_job._load_speak_module(real_helper)
