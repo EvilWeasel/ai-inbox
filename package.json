@@ -14,6 +14,7 @@
     "test:shutdown": "tsx --test tests/integration/shutdown.test.ts"
   },
   "dependencies": {
+    "@openai/apps-sdk-ui": "0.2.2",
     "@tailwindcss/postcss": "^4.3.3",
     "better-sqlite3": "^13.0.3",
     "class-variance-authority": "^0.7.1",

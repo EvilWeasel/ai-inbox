@@ -30,6 +30,7 @@ import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DetailPlayControl } from "@/components/audio-player";
+import { ResearchReport } from "@/components/research-report";
 import { AudioJobStatus } from "@/components/audio-job-status";
 import { useInboxEvents } from "@/components/use-inbox-events";
 import { Badge } from "@/components/ui/badge";
@@ -180,6 +181,7 @@ export function Inbox() {
     const apply = () => {
       const dark = theme === "dark" || (theme === "system" && media.matches);
       document.documentElement.classList.toggle("dark", dark);
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
       document.documentElement.style.colorScheme = dark ? "dark" : "light";
     };
     apply();
@@ -923,7 +925,7 @@ export function Inbox() {
                   />
                 ) : (
                   detail && (
-                    <article className="article">
+                    <article className={detail.report ? "article report-article" : "article"}>
                       <div className="article-kicker">
                         <NotificationType kind={detail.kind} resultType={detail.resultType} audioAvailable={detail.audioAvailable} />
                         {detail.edition && (
@@ -992,8 +994,8 @@ export function Inbox() {
                       )}
                       {detail.kind === "result" && !detail.audioAvailable && detail.audioStatus && detail.audioStatus !== "ready"
                         ? <AudioJobStatus status={detail.audioStatus} />
-                        : <DetailPlayControl item={detail} />}
-                      <MarkdownBody body={readingBody(detail)} />
+                        : (detail.report && !detail.audioAvailable ? null : <DetailPlayControl item={detail} />)}
+                      {detail.report ? <ResearchReport key={detail.id} report={detail.report} original={<MarkdownBody body={readingBody(detail)} />} /> : <MarkdownBody body={readingBody(detail)} />}
                       {detail.tags.length > 0 && (
                         <div className="tags" aria-label="Tags">
                           {detail.tags.map((tag) => (
@@ -1003,7 +1005,7 @@ export function Inbox() {
                           ))}
                         </div>
                       )}
-                      <section
+                      {!detail.report && <section
                         className="sources"
                         aria-labelledby="sources-heading"
                       >
@@ -1050,7 +1052,7 @@ export function Inbox() {
                             No source links were included in this item.
                           </p>
                         )}
-                      </section>
+                      </section>}
                     </article>
                   )
                 )}

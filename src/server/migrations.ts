@@ -164,4 +164,18 @@ export function migrate(sqlite: Database.Database) {
       INSERT INTO inbox_migrations(version) VALUES(4);
     `);
   }).immediate();
+  sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM inbox_migrations WHERE version=5').get()) return;
+    // Additive and nullable: older producers and code leave report data intact.
+    sqlite.exec(`
+      ALTER TABLE items ADD COLUMN report_json TEXT
+        CHECK(report_json IS NULL OR (json_valid(report_json) AND length(CAST(report_json AS BLOB))<=1048576));
+      CREATE TRIGGER items_report_revision AFTER UPDATE OF report_json ON items
+      WHEN old.report_json IS NOT new.report_json BEGIN
+        UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1;
+      END;
+      INSERT INTO inbox_migrations(version) VALUES(5);
+    `);
+  }).immediate();
+
 }

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./theme.css";
+import "@/components/research-report.css";
 import { AudioPlayerProvider } from "@/components/audio-player";
 export const metadata: Metadata = {
   title: "AI Inbox",

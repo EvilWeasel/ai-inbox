@@ -33,7 +33,7 @@ function asV2(sqlite:ReturnType<typeof openDatabase>['sqlite']) {
       CREATE TRIGGER items_revision_update AFTER UPDATE ON items WHEN old.title IS NOT new.title OR old.body IS NOT new.body
         OR old.read_at IS NOT new.read_at OR old.archived_at IS NOT new.archived_at
         BEGIN UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1; END;
-      DELETE FROM inbox_migrations WHERE version=3;`);
+      DELETE FROM inbox_migrations WHERE version IN (3,5);`);
   }).immediate();
 }
 

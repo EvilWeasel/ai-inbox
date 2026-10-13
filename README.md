@@ -54,6 +54,12 @@ counts automatically after committed changes. Reconnection resynchronizes state;
 loaded content stays usable while the connection recovers. See
 [live updates](docs/live-updates.md) for the revision protocol and storage behavior.
 
+Visual research results can include interactive sections, comparisons, charts and
+source drilldowns using OpenAI Apps SDK UI components. Switch to Original text
+to read the complete Markdown. Reports are validated structured data, with no
+producer HTML or scripts. See [visual reports](docs/visual-reports.md) for the
+optional producer contract and local import helper.
+
 ## Extension direction
 
 The first release focuses on a durable news inbox. Future work can add an

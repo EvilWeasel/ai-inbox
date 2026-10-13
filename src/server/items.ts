@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, getTableColumns, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { ingestSchema, querySchema, patchSchema, type InboxItem, type ItemList, type IngestItem } from '../lib/contracts';
 import type { InboxDatabase } from './db';
@@ -7,19 +7,23 @@ import { items } from './schema';
 
 export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
 type Row = typeof items.$inferSelect;
-export function publicItem(row: Row, audioStatus: InboxItem['audioStatus'] = null): InboxItem {
+export function publicItem(row: Row, audioStatus: InboxItem['audioStatus'] = null, includeReport = true, reportAvailable = !!row.report): InboxItem {
   return { id:row.id,title:row.title,kind:row.kind,resultType:row.resultType,origin:row.origin,edition:row.edition,publishedAt:row.publishedAt,
+    ...(includeReport ? {report:row.report ?? null} : {}), reportAvailable,
     body:row.body,summary:row.summary,sources:row.sources,tags:row.tags,audioAvailable:!!row.audioFile,
     audioDuration:row.audioDuration,audioStatus,readAt:row.readAt,archivedAt:row.archivedAt };
 }
 export function getRow(db: InboxDatabase, id: string) { return db.orm.select().from(items).where(eq(items.id,id)).get(); }
-export function detail(db: InboxDatabase, id: string) {
-  const row = getRow(db,id); if (!row) throw new ApiError(404,'Item not found');
+export function detail(db: InboxDatabase, id: string, includeReport = true) {
+  // Lists select only availability, keeping large private report JSON out of page reads.
+  const {report: reportColumn, ...columns} = getTableColumns(items);
+  const row = includeReport ? getRow(db,id) : db.orm.select({...columns, report:sql<null>`NULL`, reportAvailable:sql<number>`CASE WHEN ${reportColumn} IS NULL THEN 0 ELSE 1 END`}).from(items).where(eq(items.id,id)).get();
+  if (!row) throw new ApiError(404,'Item not found');
   const request = db.sqlite.prepare(`SELECT state,body_sha256 FROM central_audio_requests
     WHERE item_id=? ORDER BY updated_at DESC,created_at DESC,id DESC LIMIT 1`).get(id) as {state:InboxItem['audioStatus'];body_sha256:string}|undefined;
   let audioStatus: InboxItem['audioStatus'] = row.audioFile ? 'ready' : (request?.state ?? null);
   if (request && request.body_sha256 !== createHash('sha256').update(row.body,'utf8').digest('hex') && !row.audioFile) audioStatus='superseded';
-  return publicItem(row,audioStatus);
+  return publicItem(row,audioStatus,includeReport,'reportAvailable' in row ? Boolean(row.reportAvailable) : !!row.report);
 }
 export function patchItem(db: InboxDatabase, id: string, input: unknown) {
   const patch = patchSchema.parse(input);
@@ -63,7 +67,7 @@ export function listItems(db: InboxDatabase, input: unknown): ItemList {
       } catch { throw new ApiError(400,'Invalid cursor'); }
     }
     const rows = db.sqlite.prepare(`SELECT id FROM items${sqlWhere()} ORDER BY published_at DESC,id DESC LIMIT ?`).all(...values,query.limit+1) as {id:string}[];
-    const page = rows.slice(0,query.limit).map(r => detail(db,r.id));
+    const page = rows.slice(0,query.limit).map(r => detail(db,r.id,false));
     const last = page.at(-1);
     const nextCursor = rows.length > query.limit && last ? Buffer.from(JSON.stringify({at:last.publishedAt,id:last.id,filter})).toString('base64url') : null;
     return { items:page,nextCursor,counts,total };

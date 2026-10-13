@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import { reportSchema } from './report';
+
+export const REPORT_JSON_LIMIT = 1024 * 1024;
+const storedReportSchema = reportSchema.refine(value => new TextEncoder().encode(JSON.stringify(value)).length <= REPORT_JSON_LIMIT, 'Report exceeds storage limit');
 
 export const sourceSchema = z.object({ title: z.string().max(1000), url: z.string().url().max(4096).refine(v => /^https?:\/\//i.test(v), 'HTTP(S) URL required') }).strict();
 export const kindSchema = z.enum(['briefing', 'alert', 'result']);
@@ -18,6 +22,7 @@ export const itemSchema = z.object({
   resultType: resultTypeSchema.nullable(), origin: originSchema.nullable(),
   edition: z.enum(['morning', 'evening']).nullable(), publishedAt: z.string(),
   body: z.string(), summary: z.string(), sources: z.array(sourceSchema),
+  report: storedReportSchema.nullable().optional(), reportAvailable: z.boolean().optional(),
   audioAvailable: z.boolean(), audioDuration: z.number().nullable(),
   audioStatus: z.enum(['queued','generating','ready','needs_review','superseded']).nullable().optional(),
   readAt: z.string().nullable(), archivedAt: z.string().nullable(), tags: z.array(z.string()),
@@ -35,6 +40,7 @@ export const ingestSchema = z.object({
   body: z.string().min(1).max(2_000_000), summary: z.string().max(4000).default(''),
   sources: z.array(sourceSchema).max(500).default([]), tags: z.array(z.string().max(200)).max(100).default([]),
   audioDuration: z.number().finite().nonnegative().nullable().default(null),
+  report: storedReportSchema.optional(),
   provenance: z.record(z.string(), z.unknown()).default({}),
 }).strict();
 export type IngestItem = z.infer<typeof ingestSchema>;
@@ -44,6 +50,7 @@ export const resultMetadataSchema = z.object({
   title: z.string().trim().min(1).max(2000), body: z.string().min(1).max(2_000_000),
   summary: z.string().max(4000).optional(), sources: z.array(sourceSchema).max(500).optional(),
   tags: z.array(z.string().max(200)).max(100).optional(),
+  report: storedReportSchema.optional(),
   resultType: resultTypeSchema, origin: originSchema,
   publishedAt: z.string().datetime({offset:true}), phase: z.literal('final'),
   audioDuration: z.number().finite().nonnegative().optional(),

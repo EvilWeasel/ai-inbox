@@ -126,7 +126,8 @@ test('additive migration upgrades a populated v1 database without changing owner
   const upgraded = openDatabase(root);
   try {
     assert.equal(inboxRevision(upgraded), '0');
-    assert.deepEqual(listItems(upgraded, { view: 'all' }).items[0], state);
+    const {report: omittedReport, ...listState} = state; void omittedReport;
+    assert.deepEqual(listItems(upgraded, { view: 'all' }).items[0], listState);
     assert.equal(listItems(upgraded, { view: 'all', q: 'content' }).total, 1);
     patchItem(upgraded, id, { read: false }); assert.equal(inboxRevision(db), '1');
   } finally { upgraded.close(); }

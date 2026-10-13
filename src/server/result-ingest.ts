@@ -150,6 +150,9 @@ async function storeAudio(db:InboxDatabase, audio:Buffer) {
 }
 
 export async function ingestResult(db:InboxDatabase, producer:Producer, metadata:ResultMetadata, audio:Buffer|null) {
+  // Every entry point validates before media or database writes, including local CLI callers.
+  metadata = resultMetadataSchema.parse(metadata);
+  if (Buffer.byteLength(JSON.stringify(metadata),'utf8') > RESULT_METADATA_LIMIT) throw new ApiError(413,'Metadata too large');
   validateProducerHost(producer,metadata.origin.host);
   const stored=audio ? await storeAudio(db,audio) : null;
   const externalId=`producer:${producer.id}:delivery:${metadata.deliveryId}`;
@@ -158,15 +161,16 @@ export async function ingestResult(db:InboxDatabase, producer:Producer, metadata
     const created=db.sqlite.transaction(()=>{
       const exists=db.sqlite.prepare('SELECT id FROM items WHERE external_id=?').get(externalId) as {id:string}|undefined;
       db.sqlite.prepare(`INSERT INTO items
-        (id,external_id,title,kind,result_type,origin,edition,published_at,body,summary,sources,tags,audio_file,audio_duration,provenance)
-        VALUES(?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?)
+        (id,external_id,title,kind,result_type,origin,edition,published_at,body,summary,sources,tags,audio_file,audio_duration,provenance,report_json)
+        VALUES(?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(external_id) DO UPDATE SET title=excluded.title,kind=excluded.kind,result_type=excluded.result_type,
           origin=excluded.origin,published_at=excluded.published_at,body=excluded.body,summary=excluded.summary,
+          report_json=COALESCE(excluded.report_json,items.report_json),
           sources=excluded.sources,tags=excluded.tags,audio_file=COALESCE(excluded.audio_file,items.audio_file),
           audio_duration=CASE WHEN excluded.audio_file IS NULL THEN items.audio_duration ELSE excluded.audio_duration END`).run(
         randomUUID(),externalId,metadata.title,'result',metadata.resultType,origin,new Date(metadata.publishedAt).toISOString(),
         metadata.body,metadata.summary??'',JSON.stringify(metadata.sources??[]),JSON.stringify(metadata.tags??[]),stored?.name??null,
-        stored ? metadata.audioDuration??null : null,'{}');
+        stored ? metadata.audioDuration??null : null,'{}',metadata.report ? JSON.stringify(metadata.report) : null);
       const row=db.sqlite.prepare('SELECT id FROM items WHERE external_id=?').get(externalId) as {id:string};
       return {created:!exists,id:row.id};
     }).immediate();

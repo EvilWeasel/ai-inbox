@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "@openai/apps-sdk-ui/css";
+@source "../../node_modules/@openai/apps-sdk-ui";
 @import "../../node_modules/tw-animate-css/dist/tw-animate.css";
 @custom-variant dark (&:is(.dark *));
 @theme inline {
