@@ -43,7 +43,7 @@ class DemandWorkerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.data = self.root / 'data'
-        self.data.mkdir()
+        self.data.mkdir(mode=0o700)
         self.config = {'dataDir': str(self.data), 'stateDir': str(self.root / 'state'),
                        'deployLockPath': str(self.root / 'deploy.lock'), 'dailyBudgetUsd': 5}
         self.worker = module.Worker(self.config)
@@ -80,6 +80,10 @@ class DemandWorkerTests(unittest.TestCase):
         comedy = module.spoken_version('Comedy', 'Eine trockene Pointe.')[1]
         self.assertIn('dry humor', comedy)
         self.assertIn('no forced laughter', comedy)
+        directed = module.spoken_version('Report', '[sigh] Klarer Befund. [pause] Weiter. [flüstern] Ende.')[0]
+        self.assertNotIn('[sigh]', directed)
+        self.assertNotIn('[pause]', directed)
+        self.assertNotIn('[flüstern]', directed)
 
     def test_split_preserves_all_words_punctuation_and_bounds(self):
         text = ' '.join(f'Wort{index}.' if index % 7 == 0 else f'Wort{index}' for index in range(300))
@@ -192,6 +196,88 @@ class DemandWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'previous_paid_attempt_requires_review'):
                 self.worker.render('Ein Bericht.', 'Read verbatim', folder, 0)
             provider.assert_not_called()
+
+    def test_non_pcm_provider_audio_requires_review_and_never_attaches(self):
+        self.seed()
+        with patch.object(module.urllib.request, 'urlopen', return_value=FakeResponse(content_type='audio/mpeg')) as provider, contextlib.redirect_stdout(io.StringIO()):
+            self.worker.once()
+            self.assertFalse(self.worker.once())
+            self.assertEqual(provider.call_count, 1)
+        self.assertEqual(self.stored()['state'], 'needs_review')
+        self.assertIsNone(self.stored()['media_sha256'])
+
+    def test_cached_request_hash_mismatch_cannot_replay_or_reuse_paid_audio(self):
+        folder = self.worker.state / 'cached'
+        folder.mkdir()
+        with patch.object(module.urllib.request, 'urlopen', return_value=FakeResponse()) as provider:
+            self.worker.render('Original text.', 'Read calmly', folder, 0)
+            for text, instructions in [('Different text.', 'Read calmly'), ('Original text.', 'New instructions')]:
+                with self.assertRaisesRegex(ValueError, 'previous_paid_attempt_requires_review'):
+                    self.worker.render(text, instructions, folder, 0)
+            self.assertEqual(provider.call_count, 1)
+
+    def test_corrupt_recovery_receipt_marks_job_review_without_stopping_worker(self):
+        self.seed()
+        row = self.worker.claim()
+        folder = self.worker.state / row['id']
+        folder.mkdir()
+        (folder / 'final.json').write_text('{broken JSON')
+        (folder / 'final.mp3').write_bytes(b'FINISHED-MEDIA')
+        with patch.object(module.urllib.request, 'urlopen') as provider:
+            self.worker.recover()
+            provider.assert_not_called()
+        self.assertEqual(self.stored()['state'], 'needs_review')
+        self.assertEqual(self.stored()['safe_error_code'], 'worker_interrupted')
+
+    def test_invalid_provider_cost_is_ignored_and_budget_remains_reserved(self):
+        for index, value in enumerate([-1, float('nan'), float('inf')]):
+            with self.subTest(value=value):
+                folder = self.worker.state / ('invalid-cost-' + str(index))
+                folder.mkdir()
+                responses = [FakeResponse(generation='test-id')] + [FakeResponse(json.dumps({'data':{'total_cost':value}}).encode(), content_type='application/json')] * 3
+                with patch.object(module.urllib.request, 'urlopen', side_effect=responses), patch.object(module.time, 'sleep'):
+                    _, receipt = self.worker.render('An actual result.', 'Read calmly', folder, 0)
+                self.assertIsNone(receipt['costUsd'])
+                self.assertEqual(receipt['state'], 'complete')
+        self.assertAlmostEqual(self.worker.daily_spend(), .12)
+
+    def test_delayed_invalid_cost_reconciliation_does_not_remove_budget_reserve(self):
+        folder = self.worker.state / 'delayed-cost'
+        folder.mkdir()
+        path = folder / '0000.receipt.json'
+        for value in [-1, float('nan'), float('inf')]:
+            with self.subTest(value=value):
+                module.atomic_json(path, {'state':'complete', 'generationId':'test-id', 'startedAt':'2000-01-01T00:00:00+00:00', 'costUsd':None, 'reserveUsd':.04})
+                with patch.object(module.urllib.request, 'urlopen', return_value=FakeResponse(json.dumps({'data':{'total_cost':value}}).encode(), content_type='application/json')):
+                    self.worker.reconcile_costs()
+                self.assertIsNone(json.loads(path.read_text())['costUsd'])
+
+    def test_completed_partial_recovery_reuses_verified_audio_and_only_calls_missing_parts(self):
+        self.seed(body=' '.join('Ein klarer Satz.' for _ in range(200)))
+        row = self.worker.claim()
+        folder = self.worker.state / row['id']
+        folder.mkdir()
+        chunks = module.split_text(row['spoken_text'])
+        self.assertGreater(len(chunks), 1)
+        with patch.object(module.urllib.request, 'urlopen', return_value=FakeResponse(data=b'\0' * 2400000)) as first_provider:
+            self.worker.render(chunks[0], row['instructions'], folder, 0)
+            self.assertEqual(first_provider.call_count, 1)
+        with patch.object(module.urllib.request, 'urlopen', return_value=FakeResponse(data=b'\0' * 2400000)) as resumed_provider, patch.object(module.subprocess, 'run', side_effect=self.ffmpeg), patch.object(module.subprocess, 'check_output', return_value=b'{"format":{"duration":"30"}}'):
+            self.worker.recover()
+            self.assertEqual(resumed_provider.call_count, len(chunks) - 1)
+        self.assertEqual(self.stored()['state'], 'ready')
+
+    def test_completed_partial_recovery_mismatched_hash_requires_review_without_paid_call(self):
+        self.seed()
+        row = self.worker.claim()
+        folder = self.worker.state / row['id']
+        folder.mkdir()
+        with patch.object(module.urllib.request, 'urlopen', return_value=FakeResponse()):
+            self.worker.render('Wrong spoken text.', row['instructions'], folder, 0)
+        with patch.object(module.urllib.request, 'urlopen') as provider:
+            self.worker.recover()
+            provider.assert_not_called()
+        self.assertEqual(self.stored()['state'], 'needs_review')
 
 
 if __name__ == '__main__': unittest.main()

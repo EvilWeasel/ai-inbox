@@ -183,10 +183,56 @@ class Worker:
         total = 0
         today = now()[:10]
         for path in self.state.glob('*/*.receipt.json'):
-            receipt = json.loads(path.read_text())
-            if receipt.get('startedAt', '').startswith(today):
-                total += receipt.get('costUsd') if receipt.get('costUsd') is not None else receipt['reserveUsd']
+            try:
+                receipt = json.loads(path.read_text())
+                value = receipt.get('costUsd') if receipt.get('costUsd') is not None else receipt['reserveUsd']
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError('invalid_cost')
+                if receipt.get('startedAt', '').startswith(today):
+                    total += value
+            except (ValueError, TypeError, KeyError, OSError):
+                raise ValueError('audio_cost_receipt_requires_review') from None
         return total
+
+    def reconcile_costs(self):
+        """Provider usage can appear after audio is ready; reads never synthesize."""
+        if not self.key:
+            return
+        folders = set()
+        for path in self.state.glob('*/*.receipt.json'):
+            try:
+                receipt = json.loads(path.read_text())
+            except (ValueError, OSError):
+                continue
+            if receipt.get('state') != 'complete' or receipt.get('costUsd') is not None or not receipt.get('generationId'):
+                continue
+            try:
+                age = time.time() - datetime.fromisoformat(receipt['startedAt']).timestamp()
+                if age < 15:
+                    continue
+                query = urllib.request.Request('https://openrouter.ai/api/v1/generation?' + urllib.parse.urlencode({'id': receipt['generationId']}),
+                                               headers={'Authorization': 'Bearer ' + self.key})
+                with urllib.request.urlopen(query, timeout=15) as response:
+                    cost = float(json.load(response)['data']['total_cost'])
+                if not math.isfinite(cost) or cost < 0:
+                    continue
+                receipt['costUsd'] = cost
+                atomic_json(path, receipt)
+                folders.add(path.parent)
+            except Exception:
+                continue
+        for folder in folders:
+            final = folder / 'final.json'
+            if not final.exists():
+                continue
+            receipt = json.loads(final.read_text())
+            parts = [json.loads((folder / f'{i:04}.receipt.json').read_text()) for i in range(receipt['parts'])]
+            if any(part.get('costUsd') is None for part in parts):
+                continue
+            receipt['costUsd'] = sum(part['costUsd'] for part in parts)
+            atomic_json(final, receipt)
+            with self.database() as db:
+                db.execute("UPDATE item_audio_jobs SET cost_usd=? WHERE id=? AND state='ready'", (receipt['costUsd'], folder.name))
 
     def render(self, text, instructions, folder, index):
         payload = {'model': MODEL, 'voice': VOICE, 'input': text, 'instructions': instructions, 'response_format': 'pcm'}
@@ -327,11 +373,27 @@ class Worker:
                             and (receipt['costUsd'] is None or (math.isfinite(receipt['costUsd']) and receipt['costUsd'] >= 0))):
                         self.attach(row, output, receipt['duration'], receipt['costUsd'])
                         continue
+                # A stopped consumer can safely continue between paid calls,
+                # reusing only verified completed parts. Started/unknown parts
+                # still fail closed; render also checks the exact request hash.
+                prior = [json.loads(path.read_text()) for path in folder.glob('*.receipt.json')]
+                if prior and all(part.get('state') == 'complete' for part in prior):
+                    self.process(row)
+                    continue
             except (OSError, ValueError, KeyError, TypeError):
                 pass
             self.mark(row['id'], 'needs_review', 'worker_interrupted')
 
     def once(self):
+        self.reconcile_costs()
+        try:
+            self.daily_spend()
+        except ValueError:
+            if not getattr(self, '_budget_block_reported', False):
+                print(json.dumps({'state': 'needs_review', 'code': 'audio_cost_receipt_requires_review'}), flush=True)
+                self._budget_block_reported = True
+            return False
+        self._budget_block_reported = False
         row = self.claim()
         if not row:
             return False
@@ -349,11 +411,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True, type=Path)
     parser.add_argument('--loop', action='store_true')
+    parser.add_argument('--reconcile-costs-only', action='store_true')
     args = parser.parse_args()
     if args.config.is_symlink() or args.config.stat().st_mode & 0o077:
         raise SystemExit('Worker configuration must be private')
     config = json.loads(args.config.read_text())
     worker = Worker(config)
+    if args.reconcile_costs_only:
+        worker.reconcile_costs()
+        return
     with open(worker.state / 'consumer.lock', 'a') as lock:
         os.chmod(worker.state / 'consumer.lock', 0o600)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
