@@ -110,8 +110,8 @@ def load_config(path: str | Path) -> dict:
     for key in ("captureConfigFile", "bridgeConfigFile"):
         config[key] = str(private_files.assert_private_file(private_path(config[key], key)))
     mode = config.get("audioDeliveryMode", "local")
-    if not isinstance(mode, str) or mode not in {"local", "central"}:
-        raise PipelineError("audioDeliveryMode must be local or central")
+    if not isinstance(mode, str) or mode not in {"local", "central", "on_demand"}:
+        raise PipelineError("audioDeliveryMode must be local, central or on_demand")
     config["audioDeliveryMode"] = mode
     if mode == "local":
         if not config.get("audioHelperConfigFile") or not config.get("voiceProfileSha256"):
@@ -843,7 +843,7 @@ class ResultPipeline:
         if self._authored_stage(capture_row):
             self._receipt(db, row["candidate_id"], {"authoredStage": True}, "text-delivered")
             return {"candidateId": row["candidate_id"], "status": "text-delivered", "authoredStage": True}
-        if row["original_audio_path"] and self.config.get("audioDeliveryMode", "local") == "central":
+        if row["original_audio_path"] and self.config.get("audioDeliveryMode", "local") in {"central", "on_demand"}:
             try:
                 self._verify_immutable_files(row)
                 self._assert_lease()
@@ -858,6 +858,13 @@ class ResultPipeline:
                 db.execute("UPDATE pipeline_candidates SET reason='retry:audio',next_attempt_at=?,updated_at=? WHERE candidate_id=?",
                            (datetime.fromtimestamp(time.time() + 60, timezone.utc).isoformat().replace("+00:00", "Z"),utc_now(),row["candidate_id"]))
                 return {"candidateId": row["candidate_id"], "status": "text-delivered", "audio": "retryable", "reason": type(exc).__name__}
+        if self.config.get("audioDeliveryMode", "local") == "on_demand":
+            # Keep the delivery receipt and job bindings for audit/recovery. Producer
+            # delivery is complete; only an explicit Inbox action may request speech.
+            self._written_item_id(row)
+            db.execute("UPDATE pipeline_candidates SET status='text-delivered',reason='audio:on-demand',next_attempt_at=NULL,updated_at=? WHERE candidate_id=?",
+                       (utc_now(), row["candidate_id"]))
+            return {"candidateId": row["candidate_id"], "status": "text-delivered", "audio": "on-demand"}
         if not row["spoken_path"]:
             if row["original_audio_path"]:
                 try:
@@ -988,6 +995,8 @@ class ResultPipeline:
             if self._authored_stage(dict(row)):
                 self._receipt(db, candidate_id, {"authoredStage": True}, "text-delivered")
                 return {"candidateId": candidate_id, "status": "text-delivered", "authoredStage": True}
+            if self.config.get("audioDeliveryMode", "local") == "on_demand":
+                return self._advance_audio(db, dict(row))
             if self.config.get("audioDeliveryMode", "local") == "central" and row["original_audio_path"]:
                 self._verify_immutable_files(dict(row))
                 if self._authored_stage(dict(row)):
@@ -1058,11 +1067,11 @@ class ResultPipeline:
 
     def run_audio_once(self) -> dict | None:
         """Reconcile central status or claim at most one local synthesis job."""
-        if self.config.get("audioDeliveryMode", "local") == "central":
+        if self.config.get("audioDeliveryMode", "local") in {"central", "on_demand"}:
             completed = []
             for candidate_id in _audio_candidate_ids(self.config, 10):
                 completed.append(self.attach_ready_audio(candidate_id))
-            return {"mode": "central", "reconciled": len(completed), "results": completed}
+            return {"mode": self.config["audioDeliveryMode"], "reconciled": len(completed), "results": completed}
         lease_db = _connect(self.config)
         if not self._lease(lease_db, lease_seconds=MAX_LEASE):
             lease_db.close()
@@ -1116,6 +1125,10 @@ def _audio_candidate_ids(config: dict, limit: int) -> list[str]:
             db.execute("INSERT INTO candidate_cursors(pass_name,activation_epoch,last_completed_at,last_candidate_id) VALUES('audio','audio-v1','','')")
         now = utc_now()
         eligible_sql = "SELECT candidate_id,updated_at FROM pipeline_candidates WHERE (status='audio-ready' OR (status='audio-pending' AND (next_attempt_at IS NULL OR next_attempt_at<=?)) OR (status='text-delivered' AND reason='retry:audio' AND next_attempt_at<=?))"
+        if config.get("audioDeliveryMode", "local") == "on_demand":
+            # Policy changes settle queued synthesis immediately, even if its old
+            # provider backoff is still active. Retain backoff for original uploads.
+            eligible_sql = "SELECT candidate_id,updated_at FROM pipeline_candidates WHERE (status='audio-ready' OR (status='audio-pending' AND (original_audio_path IS NULL OR next_attempt_at IS NULL OR next_attempt_at<=?)) OR (status='text-delivered' AND reason='retry:audio' AND next_attempt_at<=?))"
         scan_limit = max(100, limit * 20)
         if last_time:
             rows = db.execute(eligible_sql + " AND (updated_at>? OR (updated_at=? AND candidate_id>?)) ORDER BY updated_at,candidate_id LIMIT ?",

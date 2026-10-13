@@ -49,6 +49,12 @@ item. Volume and speed are device preferences; opening mobile volume controls
 does not mute playback. Type filters are directly selectable and appearance
 menus support keyboard navigation.
 
+Missing recordings can be generated explicitly with **Generate audio**. The
+configured Gemini/Kore worker prepares a natural spoken version and persists the
+recording for subsequent playback. Viewing or delivering an item does not start
+synthesis. See [on-demand audio](docs/on-demand-audio.md) for the private worker,
+durable request identity, costs, and review behavior.
+
 A same-origin server event stream updates the list, selected report and reading
 counts automatically after committed changes. Reconnection resynchronizes state;
 loaded content stays usable while the connection recovers. See

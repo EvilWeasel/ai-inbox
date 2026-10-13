@@ -19,10 +19,15 @@ export function detail(db: InboxDatabase, id: string, includeReport = true) {
   const {report: reportColumn, ...columns} = getTableColumns(items);
   const row = includeReport ? getRow(db,id) : db.orm.select({...columns, report:sql<null>`NULL`, reportAvailable:sql<number>`CASE WHEN ${reportColumn} IS NULL THEN 0 ELSE 1 END`}).from(items).where(eq(items.id,id)).get();
   if (!row) throw new ApiError(404,'Item not found');
-  const request = db.sqlite.prepare(`SELECT state,body_sha256 FROM central_audio_requests
-    WHERE item_id=? ORDER BY updated_at DESC,created_at DESC,id DESC LIMIT 1`).get(id) as {state:InboxItem['audioStatus'];body_sha256:string}|undefined;
+  const bodySha = createHash('sha256').update(row.body,'utf8').digest('hex');
+  const job = db.sqlite.prepare(`SELECT state,body_sha256 FROM item_audio_jobs
+    WHERE item_id=? ORDER BY (body_sha256=?) DESC,updated_at DESC,created_at DESC,id DESC LIMIT 1`).get(id,bodySha) as {state:InboxItem['audioStatus'];body_sha256:string}|undefined;
+  // A paused producer queue is not an active on-demand job. Keep its ledger
+  // intact while the selected generation mode determines browser availability.
+  const request = job ?? (process.env.INBOX_AUDIO_ON_DEMAND === '1' ? undefined : db.sqlite.prepare(`SELECT state,body_sha256 FROM central_audio_requests
+    WHERE item_id=? ORDER BY updated_at DESC,created_at DESC,id DESC LIMIT 1`).get(id) as {state:InboxItem['audioStatus'];body_sha256:string}|undefined);
   let audioStatus: InboxItem['audioStatus'] = row.audioFile ? 'ready' : (request?.state ?? null);
-  if (request && request.body_sha256 !== createHash('sha256').update(row.body,'utf8').digest('hex') && !row.audioFile) audioStatus='superseded';
+  if (request && request.body_sha256 !== bodySha && !row.audioFile) audioStatus='superseded';
   return publicItem(row,audioStatus,includeReport,'reportAvailable' in row ? Boolean(row.reportAvailable) : !!row.report);
 }
 export function patchItem(db: InboxDatabase, id: string, input: unknown) {

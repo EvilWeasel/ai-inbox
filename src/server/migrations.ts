@@ -178,4 +178,46 @@ export function migrate(sqlite: Database.Database) {
     `);
   }).immediate();
 
+  sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM inbox_migrations WHERE version=6').get()) return;
+    // On-demand audio has an independent ledger; existing producer uncertainty
+    // must never authorize another paid request.
+    sqlite.exec(`
+      CREATE TABLE item_audio_jobs (
+        id TEXT PRIMARY KEY NOT NULL CHECK(length(id)=64),
+        item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+        body_sha256 TEXT NOT NULL CHECK(length(body_sha256)=64),
+        state TEXT NOT NULL CHECK(state IN ('queued','generating','ready','needs_review','superseded')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        spoken_text TEXT NOT NULL DEFAULT '',
+        instructions TEXT NOT NULL DEFAULT '',
+        media_sha256 TEXT CHECK(media_sha256 IS NULL OR length(media_sha256)=64),
+        duration REAL CHECK(duration IS NULL OR (duration>=0 AND duration<1e9)),
+        cost_usd REAL CHECK(cost_usd IS NULL OR cost_usd>=0),
+        safe_error_code TEXT
+      );
+      CREATE INDEX item_audio_queue ON item_audio_jobs(state,created_at,id);
+      CREATE INDEX item_audio_item ON item_audio_jobs(item_id,updated_at,id);
+      CREATE TRIGGER item_audio_revision_insert AFTER INSERT ON item_audio_jobs BEGIN
+        UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1;
+      END;
+      CREATE TRIGGER item_audio_revision_delete AFTER DELETE ON item_audio_jobs BEGIN
+        UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1;
+      END;
+      CREATE TRIGGER item_audio_revision_update AFTER UPDATE ON item_audio_jobs
+      WHEN old.state IS NOT new.state OR old.media_sha256 IS NOT new.media_sha256
+        OR old.duration IS NOT new.duration OR old.safe_error_code IS NOT new.safe_error_code BEGIN
+        UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1;
+      END;
+      CREATE TRIGGER item_audio_body_changed AFTER UPDATE OF body ON items
+      WHEN old.body IS NOT new.body BEGIN
+        UPDATE item_audio_jobs SET state='superseded',safe_error_code=NULL,
+          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE item_id=new.id AND state<>'superseded';
+      END;
+      INSERT INTO inbox_migrations(version) VALUES(6);
+    `);
+  }).immediate();
+
 }

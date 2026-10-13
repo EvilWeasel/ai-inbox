@@ -817,7 +817,7 @@ export function Inbox() {
                         <span className="item-foot">
                           {item.kind === "briefing" && item.edition && <span>{item.edition[0].toUpperCase() + item.edition.slice(1)} edition</span>}
                           {item.archivedAt && <span>Archived</span>}
-                          {item.kind === "result" && !item.audioAvailable && item.audioStatus && item.audioStatus !== "ready" && (
+                          {!item.audioAvailable && item.audioStatus && item.audioStatus !== "ready" && (
                             <AudioJobStatus status={item.audioStatus} variant="compact" />
                           )}
                         </span>
@@ -992,9 +992,11 @@ export function Inbox() {
                           </Button>
                         </div>
                       )}
-                      {detail.kind === "result" && !detail.audioAvailable && detail.audioStatus && detail.audioStatus !== "ready"
-                        ? <AudioJobStatus status={detail.audioStatus} />
-                        : (detail.report && !detail.audioAvailable ? null : <DetailPlayControl item={detail} />)}
+                      <DetailPlayControl item={detail} onAudioRequested={item => {
+                        rememberDetail(item);
+                        setDetail(current => current?.id === item.id ? item : current);
+                        setList(current => current ? { ...current, items: current.items.map(entry => entry.id === item.id ? item : entry) } : current);
+                      }} />
                       {detail.report ? <ResearchReport key={detail.id} report={detail.report} original={<MarkdownBody body={readingBody(detail)} />} /> : <MarkdownBody body={readingBody(detail)} />}
                       {detail.tags.length > 0 && (
                         <div className="tags" aria-label="Tags">

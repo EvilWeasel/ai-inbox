@@ -36,7 +36,7 @@ test('independent migration persists schema, FTS and state across connections',(
   upsertBatch(db,[{item:item()}]);const stable=id();patchItem(db,stable,{read:true,archived:true});
   db.close();db=openDatabase(join(root,'data'));
   assert.equal(detail(db,stable).id,stable);assert.ok(detail(db,stable).readAt);assert.equal(listItems(db,{view:'all',q:'café'}).total,1);
-  assert.equal(db.sqlite.prepare('SELECT count(*) n FROM inbox_migrations').get() && (db.sqlite.prepare('SELECT count(*) n FROM inbox_migrations').get() as {n:number}).n,5);
+  assert.equal(db.sqlite.prepare('SELECT count(*) n FROM inbox_migrations').get() && (db.sqlite.prepare('SELECT count(*) n FROM inbox_migrations').get() as {n:number}).n,6);
 });
 test('reimport preserves ID/read/archive and synchronizes FTS updates/deletes',()=>{
   upsertBatch(db,[{item:item()}]); const stable=id();const state=patchItem(db,stable,{read:true,archived:true});

@@ -317,3 +317,17 @@
 }
 
 @media (max-width: 640px) { .audio-player.enhanced-audio-detail .audio-detail-status { display: none; } }
+
+.audio-player.enhanced-audio-detail .detail-play-control:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+.audio-request-error {
+  margin: -0.5rem 0 1.25rem;
+  color: #b42318;
+  font-size: 0.875rem;
+}
+.dark .audio-request-error { color: #fda29b; }
+.audio-generation-control .enhanced-audio-detail { flex-wrap: wrap; }
+.audio-generation-control .detail-play-control { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.audio-generation-control .audio-player.enhanced-audio-detail .audio-duration { white-space: normal; }

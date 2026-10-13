@@ -294,7 +294,7 @@ describe("inbox API interactions", () => {
     fetchMock.mockImplementation(async url => String(url).startsWith("/api/items?")
       ? response(result(legacy)) : response({ item: legacy }));
     await act(async () => serverChange());
-    await screen.findByText("Audio is not available for this item.");
+    await screen.findByRole("button", { name: `Generate audio for ${legacy.title}` });
     expect(screen.queryAllByText(/Audio queued|Preparing audio|Audio needs attention|Audio unavailable for this version/)).toHaveLength(0);
     expect(screen.getByText(legacy.body)).toBeTruthy();
   });
@@ -721,6 +721,39 @@ describe("Inbox playback navigation", () => {
 });
 
 describe("live invalidation integration", () => {
+  it("generates missing report audio only on click, then reveals Play after live completion", async () => {
+    let report: InboxItem = {
+      ...resultFixture,
+      audioAvailable: false, audioDuration: null, audioStatus: null,
+      report: { version: 1, title: "Structured report", sections: [{ id: "findings", title: "Findings", blocks: [{ type: "text", text: "Verified findings", sourceIds: [] }] }], sources: [] },
+    };
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
+    fetchMock.mockImplementation(async (url, options) => {
+      if (options?.method === "POST") {
+        report = { ...report, audioStatus: "queued" };
+        return response({ item: report }, 202);
+      }
+      return String(url).startsWith("/api/items?") ? response(result(report)) : response({ item: report });
+    });
+    route("item=agent-result");
+    render(<Inbox />);
+    const generate = await screen.findByRole("button", { name: "Generate audio for Implemented cache invalidation" });
+    expect(screen.getByText("Verified findings")).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(0);
+    fireEvent.click(generate);
+    fireEvent.click(generate);
+    await screen.findByRole("button", { name: "Audio queued for Implemented cache invalidation" });
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "POST")).toHaveLength(1);
+    report = { ...report, audioStatus: "generating" };
+    await act(async () => serverChange());
+    await screen.findByRole("button", { name: "Preparing audio for Implemented cache invalidation" });
+    report = { ...report, audioAvailable: true, audioDuration: 95, audioStatus: "ready" };
+    await act(async () => serverChange());
+    const control = await screen.findByRole("button", { name: "Play Implemented cache invalidation" });
+    expect(play).not.toHaveBeenCalled();
+    fireEvent.click(control);
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
+  });
   it("reveals playback when queued audio becomes ready without autoplaying or replacing the current track", async () => {
     let report: InboxItem = {
       ...resultFixture,

@@ -104,6 +104,11 @@ export class InboxEventHub {
     deactivateHub(this);
     for (const listener of listeners) listener(null, false);
   }
+  /** Call only after a committed mutation. Cross-process writers are still
+   * observed by polling, which remains the durable source of truth. */
+  notifyCommit() {
+    if (this.listeners.size) this.check();
+  }
   private check() {
     try {
       const revision = inboxRevision(this.db);

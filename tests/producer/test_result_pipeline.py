@@ -506,6 +506,68 @@ class ResultPipelineTests(unittest.TestCase):
         self.assertNotIn("audioHelperConfigFile", loaded)
         self.assertNotIn("voiceProfileSha256", loaded)
 
+    def _on_demand_pipeline(self):
+        self.config = dict(self.config, audioDeliveryMode="on_demand")
+        self.config.pop("audioHelperConfigFile", None)
+        self.config.pop("voiceProfileSha256", None)
+        pipeline = self._pipeline()
+        pipeline._audio_store = lambda: self.fail("on-demand must not open a speech job store")
+        pipeline._central_audio_module = lambda: self.fail("on-demand must not request or poll central audio")
+        return pipeline
+
+    def test_on_demand_delivers_text_without_enqueuing_or_synthesizing(self):
+        pipeline = self._on_demand_pipeline()
+        loaded = pipeline_module.load_config(self._private("on-demand.json", self.config))
+        self.assertEqual(loaded["audioDeliveryMode"], "on_demand")
+        result = pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(result["status"], "text-delivered")
+        self.assertEqual(result["audio"], "on-demand")
+        self.assertEqual([audio for _, audio in self.sender_calls], [None])
+        pipeline.process_candidate(self.row["candidate_id"])
+        self.assertEqual(pipeline.run_audio_once()["reconciled"], 0)
+        self.assertEqual(len(self.sender_calls), 1)
+        self.assertEqual(self.store.calls, 0)
+
+    def test_on_demand_settles_pending_jobs_preserving_written_receipt(self):
+        pipeline = self._on_demand_pipeline()
+        pipeline.process_candidate(self.row["candidate_id"])
+        for job_kind in ("central_audio_job_id", "audio_job_id"):
+            with self.subTest(job_kind=job_kind):
+                db = pipeline_module._connect(self.config)
+                try:
+                    before = db.execute("SELECT receipt_json FROM pipeline_candidates WHERE candidate_id=?",
+                                        (self.row["candidate_id"],)).fetchone()[0]
+                    db.execute(f"UPDATE pipeline_candidates SET status='audio-pending',{job_kind}=?,next_attempt_at='2099-01-01T00:00:00Z' WHERE candidate_id=?",
+                               ("a" * 64, self.row["candidate_id"]))
+                finally:
+                    db.close()
+                result = pipeline.run_audio_once()
+                self.assertEqual(result["results"][0]["status"], "text-delivered")
+                db = pipeline_module._connect(self.config)
+                try:
+                    row = dict(db.execute("SELECT * FROM pipeline_candidates WHERE candidate_id=?",
+                                          (self.row["candidate_id"],)).fetchone())
+                finally:
+                    db.close()
+                self.assertEqual(row["receipt_json"], before)
+                self.assertEqual(row[job_kind], "a" * 64)
+                self.assertIsNone(row["next_attempt_at"])
+        self.assertEqual(len(self.sender_calls), 1)
+
+    def test_on_demand_reuses_original_even_with_spoken_adaptation(self):
+        original = self.audio_root / "on-demand-original.mp3"
+        original.write_bytes(b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\xff\xfb\x90\x64" + b"\x00" * 413)
+        original.chmod(0o600)
+        self.decision = self._meaningful_decision(originalAudio={
+            "path": str(original), "sha256": hashlib.sha256(original.read_bytes()).hexdigest()})
+        pipeline = self._on_demand_pipeline()
+        self.fail_next_audio_send = True
+        self.assertEqual(pipeline.process_candidate(self.row["candidate_id"])["audio"], "retryable")
+        result = pipeline.attach_ready_audio(self.row["candidate_id"])
+        self.assertEqual(result["status"], "audio-delivered")
+        self.assertEqual(self.deliveries[pipeline_module.stable_delivery_id("thread-1", "run-7")]["audio"], original.read_bytes())
+        self.assertEqual(self.store.calls, 0)
+
     def test_sender_false_receipt_never_marks_text_delivered(self):
         self.pipeline.sender = lambda *_args: {"delivered": False, "itemId": "item-1"}
         result = self.pipeline.process_candidate(self.row["candidate_id"])

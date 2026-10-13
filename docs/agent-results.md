@@ -86,8 +86,24 @@ This is an explicit delivery interface. Automatic T3 completion integration must
 use verified final-run state, stable source IDs, host-owned credentials and
 all future personal T3 threads through a host-level delivery policy. Completed
 research, implementation and report deliverables should be staged automatically
-with a spoken MP3; the owner should not have to opt in per thread. Existing audio
-is reused exactly. If a result has no recording, the producing agent creates a
-concise spoken adaptation through the configured audio provider. Ordinary replies,
+as written results. Set the private result-pipeline configuration's
+`audioDeliveryMode` to `on_demand` for the current delivery policy. No local speech
+helper runs and no central audio request is submitted or polled by this mode.
+Existing original MP3s are validated and reused exactly, including when a spoken
+adaptation also exists. A result without a recording is delivered as text; its
+audio generation begins only after the owner's explicit Generate action in the
+Inbox. A successful generation becomes the Play action and reuses the recording
+on subsequent visits. The browser must not generate merely by loading an item.
+
+When switching a producer from `central` or `local` to `on_demand`, pending
+candidate reconciliation settles the written delivery as `text-delivered` and
+retains its delivery receipt and existing job identifiers. It does not cancel a
+request already submitted to another worker; stop or drain that worker separately
+before changing policy if a paid call is still queued. Existing original uploads
+remain retryable. Blocked or uncertain paid requests retain their review state.
+The older `central` and `local` modes remain explicit compatibility options and
+must not be used by producers under the on-demand policy.
+
+Ordinary replies,
 progress, delegated intermediate work and already delivered news stay out of this
 feed. Historical bulk import is separate from ongoing delivery.

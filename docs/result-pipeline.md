@@ -20,9 +20,7 @@ or directories. The pipeline config has these required fields:
   "bridgeConfigFile": "/private/t3-results.json",
   "stateDir": "/private/result-pipeline",
   "decisionHelperArgv": ["/usr/bin/python3", "/private/trusted-classifier.py"],
-  "audioDeliveryMode": "local",
-  "audioHelperConfigFile": "/private/audio-helper.json",
-  "voiceProfileSha256": "64-lowercase-hex-characters",
+  "audioDeliveryMode": "on_demand",
   "decisionHelperTimeoutSeconds": 60
 }
 ```
@@ -31,11 +29,19 @@ or directories. The pipeline config has these required fields:
 The pipeline does not call capture `init`, change its activation epoch, or scan
 before that epoch. The bridge config supplies the existing producer config and
 its allowed audio roots. `audioDeliveryMode` is optional and defaults to
-`local`. Accepted values are `local` and `central`. Local mode preserves the
+`local` for compatibility. Set it explicitly to `on_demand` for current producer
+delivery. Accepted values are `local`, `central` and `on_demand`. Local mode preserves the
 existing behavior: `audioHelperConfigFile` supplies the audio job database/media
 paths, fixed helper argv/path, non-secret profile reference and timeout in the
 shape consumed by `audio-jobs.py`; `voiceProfileSha256` identifies the configured
 voice.
+
+On-demand mode needs neither the local helper config nor a voice profile. It
+delivers written results and uploads a validated explicitly selected original
+MP3 when present. Otherwise it completes the candidate as `text-delivered` with
+reason `audio:on-demand`, without calling a speech helper or requesting/polling
+central audio. Inbox generation requires an explicit owner action. An existing
+spoken adaptation may remain staged but cannot trigger generation by itself.
 
 Central mode needs neither `audioHelperConfigFile` nor `voiceProfileSha256`. The
 producer config referenced by the bridge supplies the HTTPS `/api/results`
@@ -171,6 +177,14 @@ that safe. Pending jobs retain their job and item IDs. `ready` and
 service errors use the existing capped audio backoff. The exact authored-stage
 check runs before each central request/status operation and before an original
 recording upload.
+
+In on-demand mode, `audio-once` settles pending synthesis candidates as written
+deliveries, even when their old provider backoff has not elapsed. It retains job
+identifiers and written receipts for audit, clears candidate audio retry timing,
+and never opens a local job store or polls central jobs. Explicit original uploads
+keep their normal retry behavior. Switching modes does not cancel previously
+submitted provider jobs; stop or drain their worker separately. Blocked/uncertain
+requests remain held for review.
 
 ```sh
 python3 scripts/result-pipeline.py --config /private/result-pipeline.json audio-once

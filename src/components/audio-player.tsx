@@ -5,6 +5,7 @@ import { DropdownMenu, Popover, Slider } from "radix-ui";
 import { Check, ChevronDown, Pause, Play, RotateCcw, Volume1, Volume2, VolumeX } from "lucide-react";
 import type { InboxItem } from "@/lib/contracts";
 import "./audio-player.css";
+import { AudioGenerationControl } from "./audio-generation-control";
 
 type Track = Pick<InboxItem, "id" | "title">;
 type Status = { track: Track | null; playing: boolean; pending: boolean; ended: boolean; error: string };
@@ -197,10 +198,10 @@ export function AudioPlayerProvider({ children }: { children: React.ReactNode })
     <audio ref={audio} preload="none" aria-label="Inbox audio" hidden />
   </PlayerContext.Provider>;
 }
-export const DetailPlayControl = memo(function DetailPlayControl({ item }: { item: InboxItem }) {
+export const DetailPlayControl = memo(function DetailPlayControl({ item, onAudioRequested }: { item: InboxItem; onAudioRequested?: (item: InboxItem) => void }) {
   const player = usePlayer();
   const status = useStatus(player);
-  if (!item.audioAvailable) return <p className="audio-unavailable">Audio is not available for this item.</p>;
+  if (!item.audioAvailable) return <AudioGenerationControl key={item.id} item={item} onRequested={onAudioRequested} />;
   const current = status.track?.id === item.id;
   const label = current ? status.pending ? "Cancel playback" : status.playing ? "Pause" : status.error ? "Retry" : status.ended ? "Replay" : "Resume" : "Play";
   const duration = finite(item.audioDuration ?? 0);

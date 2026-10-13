@@ -1,0 +1,16 @@
+[Unit]
+Description=AI Inbox audio requested by the owner
+After=ai-inbox.service
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PROTON_PASS_LINUX_KEYRING=dbus
+ExecStart=/usr/bin/env pass-cli run --env-file %h/.config/ai-inbox/demand-audio.env -- /usr/bin/python3 %h/.local/lib/ai-inbox/demand-audio-worker.py --config %h/.config/ai-inbox/demand-audio.json --loop
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
