@@ -22,7 +22,7 @@ describe("on-demand audio", () => {
     fireEvent.click(button);
     fireEvent.click(button);
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith("/api/items/missing%2Faudio/audio-request", { method: "POST" });
+    expect(fetch).toHaveBeenCalledWith("/api/items/missing%2Faudio/audio-request", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     const queued = { ...item, audioStatus: "queued" as const };
     finish(response(queued));
     await waitFor(() => expect(onRequested).toHaveBeenCalledWith(queued));
@@ -44,6 +44,20 @@ describe("on-demand audio", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(fetch).toHaveBeenCalledTimes(2);
     await screen.findByRole("button", { name: "Audio queued for A report" });
+  });
+
+
+  it("explains a rejected request format without blaming the connection or leaking server content", async () => {
+    const fetch = vi.fn().mockResolvedValue({ ok: false, status: 415, json: async () => ({ error: "private server detail" }) });
+    vi.stubGlobal("fetch", fetch);
+    render(<AudioGenerationControl item={item} />);
+    fireEvent.click(screen.getByRole("button", { name: "Generate audio for A report" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("request format");
+    expect(alert.textContent).toContain("HTTP 415");
+    expect(alert.textContent).not.toContain("private server detail");
+    expect(alert.textContent).not.toContain("connection");
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("does not expose a paid retry for a recording that requires review", () => {
