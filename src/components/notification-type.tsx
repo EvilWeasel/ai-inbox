@@ -33,11 +33,11 @@ export function notificationTypeLabel(
   resultType?: ResultType | null,
 ) {
   if (kind === "briefing") return "Briefing";
-  if (kind === "alert") return "Release alert";
-  if (resultType === "implementation") return "Implementation result";
-  if (resultType === "report") return "Report result";
-  if (resultType === "research") return "Research result";
-  return "Agent result";
+  if (kind === "alert") return "Neuigkeit";
+  if (resultType === "implementation") return "Änderung";
+  if (resultType === "report") return "Bericht";
+  if (resultType === "research") return "Recherche";
+  return "Beitrag";
 }
 
 export function NotificationType({

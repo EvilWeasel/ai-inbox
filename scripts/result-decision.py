@@ -31,7 +31,7 @@ MAX_SPOKEN = 3500
 MIN_SPOKEN_WORDS = 100
 MAX_SPOKEN_WORDS = 350
 MAX_TIMEOUT = 180
-PROMPT_VERSION = "t3-result-decision-v2-reading-value"
+PROMPT_VERSION = "t3-result-decision-v3-clear-reading"
 MODEL_DEFAULT = "gpt-6-luna"
 EFFORTS = {"low", "medium"}
 SERVICE_TIERS = {"default"}
@@ -464,6 +464,11 @@ def _invoke(request_raw: bytes, config: dict) -> bytes:
             "coordination, partial implementation, internal signoffs, CI/build receipts, "
             "routine repair/status confirmations and superseded progress even if a turn is final. "
             "A final message is not necessarily a finished user-facing result. "
+            "Exclude release/qualification reports made of version numbers, hashes, gate status and "
+            "test counts without a clear usable benefit. The reader assumes checks pass. "
+            "The body must be understandable without internal project context and explain a concrete "
+            "finding, usable feature or requested artifact. Do not relabel jargon to make it qualify. "
+            "Titles must say what the reader can do or learn, without qualified, verified, handoff or result jargon. "
             "Keep substantial completed research, requested creative artifacts, and genuinely usable "
             "shipped features with a clear practical benefit. Implementation details alone are insufficient. "
             "Use review when completion or meaning is genuinely uncertain; preserve that uncertainty. "

@@ -83,7 +83,7 @@ function readingBody(item: InboxItem) {
   return first === item.title ? parts.slice(1).join("\n\n") : item.body;
 }
 function sourceLabel(item: InboxItem) {
-  if (item.kind === "result") return item.origin?.host || item.origin?.project || "";
+  if (item.kind === "result") return "";
   const source = item.sources[0];
   if (!source)
     return item.kind === "briefing" ? "Daily briefing" : "Release alert";
@@ -172,20 +172,6 @@ export function Inbox() {
   const [rankingError,setRankingError]=useState("");
   const [rankingStarting,setRankingStarting]=useState(false);
   const rankingBusy=rankingStarting || ranking?.state === "running";
-  useEffect(() => {
-    let cancelled=false;
-    let timer:ReturnType<typeof setTimeout>;
-    const poll=async () => {
-      try {
-        const data=await request<{run:typeof ranking}>("/api/ranking");
-        if(cancelled)return;
-        setRanking(data.run);
-        if(data.run?.state === "running") timer=setTimeout(poll,3000);
-      } catch { if(!cancelled)setRankingError("Ranking status unavailable. Please try again."); }
-    };
-    void poll();
-    return () => {cancelled=true;clearTimeout(timer);};
-  },[ranking?.state]);
   const rankNow=async () => {
     setRankingStarting(true);setRankingError("");
     try {
@@ -250,6 +236,20 @@ export function Inbox() {
     liveDirty.current = true;
     setLiveVersion(version => version + 1);
   }, []));
+  useEffect(() => {
+    let cancelled=false;
+    let timer:ReturnType<typeof setTimeout>;
+    const poll=async () => {
+      try {
+        const data=await request<{run:typeof ranking}>("/api/ranking");
+        if(cancelled)return;
+        setRanking(data.run);
+        if(data.run?.state === "running") timer=setTimeout(poll,3000);
+      } catch { if(!cancelled)setRankingError("Ranking status unavailable. Please try again."); }
+    };
+    void poll();
+    return () => {cancelled=true;clearTimeout(timer);};
+  },[ranking?.state,liveVersion]);
   const [moreLoading, setMoreLoading] = useState(false);
   const [moreError, setMoreError] = useState("");
   const [refreshError, setRefreshError] = useState("");
@@ -744,7 +744,7 @@ export function Inbox() {
                   { value: "", label: "All", Icon: InboxIcon },
                   { value: "briefing", label: "Briefings", Icon: Newspaper },
                   { value: "alert", label: "Alerts", Icon: BellRing },
-                  { value: "result", label: "Agent results", Icon: FileSearch },
+                  { value: "result", label: "Saved reading", Icon: FileSearch },
                 ] as const).map(({ value, label, Icon }) => (
                   <Button
                     key={value || "all"}
@@ -859,8 +859,8 @@ export function Inbox() {
                         </span>
                         <span className="item-summary">
                           {item.summary || "Open to read this item."}
-                          {(sort === "important" || sort === "least-important") && <span className="importance-reason">{item.importance ? `${item.importance.score}/100 · ${item.importance.reason}` : "Unranked · Run AI ranking to evaluate this item"}</span>}
                         </span>
+                        {(sort === "important" || sort === "least-important") && <span className="importance-reason">{item.importance ? `${item.importance.score}/100 · ${item.importance.reason}` : "Unranked · Run AI ranking to evaluate this item"}</span>}
                         <span className="item-foot">
                           {item.kind === "briefing" && item.edition && <span>{item.edition[0].toUpperCase() + item.edition.slice(1)} edition</span>}
                           {item.archivedAt && <span>Archived</span>}
@@ -983,15 +983,15 @@ export function Inbox() {
                         )}
                       </div>
                       {detail.kind === "result" && detail.origin && (
-                        <div className="result-origin" aria-label="Result origin">
-                          <span className="result-origin-label">From</span>
+                        <details className="result-origin" aria-label="Result origin">
+                          <summary>Herkunft</summary>
                           {detail.origin.host && <span className="origin-value" title={detail.origin.host}>{detail.origin.host}</span>}
                           {detail.origin.project && <span className="origin-value" title={detail.origin.project}>{detail.origin.project}</span>}
                           {detail.origin.model && <span className="origin-value" title={detail.origin.model}>{detail.origin.model}</span>}
                           {safeThreadUrl(detail.origin.threadUrl) && (
                             <a href={safeThreadUrl(detail.origin.threadUrl)} target="_blank" rel="noopener noreferrer">Open source thread<span className="sr-only"> (opens in new tab)</span></a>
                           )}
-                        </div>
+                        </details>
                       )}
                       <h2 ref={detailHeading} tabIndex={-1}>
                         {detail.title}

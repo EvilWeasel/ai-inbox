@@ -201,7 +201,7 @@ describe("inbox API interactions", () => {
       ? response(result(resultFixture)) : response({ item: resultFixture }));
     render(<Inbox />);
     await screen.findByRole("button", { name: /Implemented cache invalidation/ });
-    fireEvent.click(screen.getByRole("button", { name: "Agent results" }));
+    fireEvent.click(screen.getByRole("button", { name: "Saved reading" }));
     await waitFor(() => {
       expect(window.location.search).toContain("kind=result");
       expect(fetchMock.mock.calls.some(([url]) => String(url).includes("kind=result"))).toBe(true);
@@ -263,7 +263,7 @@ describe("inbox API interactions", () => {
     route("item=agent-result");
     render(<Inbox />);
     await screen.findByRole("heading", { name: item.title });
-    expect(screen.getAllByText("Agent result").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Beitrag").length).toBeGreaterThan(0);
     expect(screen.queryByLabelText("Result origin")).toBeNull();
     expect(screen.queryByRole("link", { name: /Open source thread/ })).toBeNull();
   });

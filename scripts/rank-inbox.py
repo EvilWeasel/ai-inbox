@@ -73,19 +73,23 @@ def infer(config,payload,work):
 def run(args):
     started=time.monotonic()
     db=sqlite3.connect(str(pathlib.Path(args.data_dir)/'inbox.sqlite'),timeout=10);db.row_factory=sqlite3.Row
+    phase="configuration"
     try:
         config=json.loads(decision.private_files.assert_private_file(args.config).read_text())
         decision._supports_exec_options(config)
         rows=[dict(x) for x in db.execute('SELECT id,title,summary,body,kind,published_at FROM items WHERE archived_at IS NULL ORDER BY published_at DESC,id DESC')]
         if len(rows)>2000:raise ValueError('snapshot too large')
+        phase="personal context"
         messages,sources=context(config)
         if not messages:raise ValueError('no verified user context')
+        phase="inference"
         scores=[];catalog=[{'id':r['id'],'title':r['title']} for r in rows]
         for offset in range(0,len(rows),50):
             if time.monotonic()-started>1200:raise ValueError('ranking deadline')
             with tempfile.TemporaryDirectory(prefix='ranking-',dir=args.data_dir) as temp:
                 work=pathlib.Path(temp);os.chmod(work,0o700)
                 scores+=infer(config,{'now':stamp(),'ownerPreferences':config.get('preferences',''),'recentUserMessages':messages,'catalog':catalog,'items':[{**r,'body':r['body'][:6500]} for r in rows[offset:offset+50]]},work)
+        phase='saving scores'
         originals={r['id']:r for r in rows};now=stamp();applied=0
         with db:
             status=db.execute('SELECT state FROM ranking_runs WHERE id=?',(args.run_id,)).fetchone()
@@ -96,8 +100,11 @@ def run(args):
                 db.execute('INSERT OR REPLACE INTO item_rankings VALUES(?,?,?,?,?,?)',(s['id'],args.run_id,digest(current),s['score'],s['reason'].strip(),now));applied+=1
             info=json.dumps({'messages':len(messages),'sources':len(sources),'latestUserMessageAt':messages[0]['at'],'snapshotItems':len(rows),'rankedItems':applied,'model':config.get('model','gpt-6-luna'),'contextScope':'Configured personal T3 stores, all providers; latest 3 user messages per thread, last 14 days.'})
             db.execute("UPDATE ranking_runs SET state='ready',completed_at=?,context_info=? WHERE id=?",(now,info,args.run_id))
-    except Exception:
-        with db:db.execute("UPDATE ranking_runs SET state='failed',completed_at=?,error='AI ranking failed. Previous scores are preserved; try again.' WHERE id=? AND state='running'",(stamp(),args.run_id))
+    except Exception as exc:
+        known=str(exc) if isinstance(exc,(decision.DecisionError,ValueError)) else getattr(exc,'sqlite_errorname','')
+        label=' ('+known+')' if known in {'Codex emitted a tool, command, or unsupported event','Codex did not complete exactly one successful turn','Codex process timed out','Codex event stream is empty or oversized','invalid score/reason','ID coverage','missing IDs','inference failed','invalid output','no verified user context','run no longer active','SQLITE_BUSY','SQLITE_READONLY'} else ''
+        error='AI ranking failed during '+phase+label+'. Previous scores are preserved; try again.'
+        with db:db.execute("UPDATE ranking_runs SET state='failed',completed_at=?,error=? WHERE id=? AND state='running'",(stamp(),error,args.run_id))
         raise
     finally:db.close()
 

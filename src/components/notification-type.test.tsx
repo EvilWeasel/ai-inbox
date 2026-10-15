@@ -5,10 +5,10 @@ import { NotificationType } from "./notification-type";
 describe("notification types", () => {
   it.each([
     ["briefing", undefined, "Briefing", "Newspaper"],
-    ["alert", undefined, "Release alert", "BellRing"],
-    ["result", "research", "Research result", "FileSearch"],
-    ["result", "implementation", "Implementation result", "Code2"],
-    ["result", "report", "Report result", "ClipboardList"],
+    ["alert", undefined, "Neuigkeit", "BellRing"],
+    ["result", "research", "Recherche", "FileSearch"],
+    ["result", "implementation", "Änderung", "Code2"],
+    ["result", "report", "Bericht", "ClipboardList"],
   ] as const)("shows the %s type with an accessible label and recognizable icon", (kind, resultType, label, icon) => {
     const { container } = render(<NotificationType kind={kind} resultType={resultType} />);
     expect(screen.getByText(label)).toBeTruthy();
