@@ -580,6 +580,7 @@ export function Inbox() {
         <span>AI Inbox</span>
       </div>
       <nav aria-label="Inbox views" className="nav-list">
+        <a className="nav-item" href="/observatory">Agent Observatory</a>
         {views.map(({ value, title, icon: Icon }) => (
           <Button
             key={value}
