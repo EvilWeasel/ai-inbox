@@ -30,7 +30,7 @@ test('shared Agent-Native transport binds writes, validates active run and attem
  writeFileSync(producerFile,JSON.stringify({producers:[{id:'publisher',host:'host',tokenHash:createHash('sha256').update(token).digest('hex')}]}),{mode:0o600});
  process.env.INBOX_OBSERVATORY_CONFIG=configFile;process.env.INBOX_DATA_DIR=join(dir,'data');process.env.INBOX_PRODUCERS_FILE=producerFile;delete process.env.INBOX_ORIGIN;
  let activeAttempt='attempt';let nativeCalls=0;
- globalThis.fetch=async url=>{nativeCalls++;return Response.json(String(url).includes('.well-known')?{environmentId:'environment',orchestrationProtocolVersion:2}:{historyCursor:null,hasMoreHistory:false,latestLocalTurnOrdinal:null,projection:{thread:{id:'thread'},runs:[{id:'run',activeAttemptId:activeAttempt,status:'running'}]},snapshotSequence:7});};
+ globalThis.fetch=async url=>{nativeCalls++;return Response.json(String(url).includes('.well-known')?{environmentId:'environment',orchestrationProtocolVersion:2}:{historyCursor:null,hasMoreHistory:false,latestLocalTurnOrdinal:null,projection:{thread:{id:'thread'},runs:[{id:'run',ordinal:1,activeAttemptId:activeAttempt,status:'running'}]},snapshotSequence:7});};
  const request=(body:unknown,bearer=token)=>new Request('http://localhost/api/observatory/actions/publish',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${bearer}`},body:JSON.stringify(body)});
  try{
   const input={...identity,expectedRevision:0,canvas};

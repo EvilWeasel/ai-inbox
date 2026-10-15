@@ -8,6 +8,8 @@ export const canvasSchema = z.object({
   checkpoints:z.array(z.object({id,reason:z.string().min(1).max(2000),requestedBy:z.enum(['user','agent']),status:z.enum(['planned','reached']),reachedAt:z.iso.datetime().nullable(),evidence:z.string().max(2000)}).strict().refine(v=>v.status!=='reached'||Boolean(v.reachedAt&&v.evidence),'Reached checkpoints require timestamp and evidence')).max(50).default([]),
   layout:z.object({columns:z.number().int().min(1).max(3), panels:z.array(z.enum(['summary','plan','activity','history'])).min(1).max(4), accent:z.enum(['blue','green','amber','violet'])}).strict(),
 }).strict();
+export const registrationSchema = identitySchema;
+export type Registration = Identity & {producerId:string;registeredAt:string;expiresAt:string};
 export const publishSchema = identitySchema.extend({expectedRevision:z.number().int().nonnegative(), canvas:canvasSchema}).strict();
 export type Identity = z.infer<typeof identitySchema>;
 export type Canvas = z.infer<typeof canvasSchema>;
