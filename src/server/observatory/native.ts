@@ -1,4 +1,4 @@
-import type { NativeThread, HostStatus } from '../../lib/observatory/contracts';
+import type { NativeThread, HostStatus, HistoryCoverage, HistoryPage } from '../../lib/observatory/contracts';
 import { config, credential, type ObservatoryConfig } from './config';
 import { ApiError } from '../items';
 type Host=ObservatoryConfig['hosts'][number];
@@ -21,12 +21,12 @@ async function boundedJson(response:Response) {
 async function request(host:Host,path:string,token:string,authenticated=true) {
   return boundedJson(await fetch(new URL(path,host.origin),{headers:authenticated?{Authorization:`Bearer ${token}`,'x-t3-orchestration-protocol':'2'}:{},redirect:'error',signal:AbortSignal.timeout(12000),cache:'no-store'}));
 }
-async function read(host:Host,threadId?:string,fresh=false):Promise<unknown> {
-  const key=JSON.stringify([host,threadId]);const hit=cache.get(key);if(!fresh&&hit&&hit.expires>Date.now())return hit.value;
+async function read(host:Host,threadId?:string,fresh=false,cursor?:string):Promise<unknown> {
+  const key=JSON.stringify([host,threadId,cursor]);const hit=cache.get(key);if(!fresh&&hit&&hit.expires>Date.now())return hit.value;
   if(!fresh&&pending.has(key))return pending.get(key)!;
   const promise=(async()=>{const token=credential(host);const descriptor=record(await request(host,'/.well-known/t3/environment',token,false));
     if(descriptor.environmentId!==host.environmentId||descriptor.orchestrationProtocolVersion!==2)throw new Error('Environment mismatch');
-    const raw=await request(host,threadId?`/api/orchestration/threads/${encodeURIComponent(threadId)}`:'/api/orchestration/shell',token);
+    const raw=await request(host,threadId?`/api/orchestration/threads/${encodeURIComponent(threadId)}/${cursor ? `history?${new URLSearchParams({cursor})}` : 'bounded'}`:'/api/orchestration/shell',token);
     const value=redact(raw,[token]);cache.set(key,{expires:Date.now()+5000,value});if(cache.size>100)cache.delete(cache.keys().next().value!);return value;
   })();pending.set(key,promise);try{return await promise;}finally{pending.delete(key);}
 }
@@ -49,7 +49,24 @@ export async function detail(hostId:string,threadId:string,fresh=false) {
   const host=config().hosts.find(h=>h.id===hostId);if(!host)throw new ApiError(404,'Unknown host');
   try {const raw=record(await read(host,threadId,fresh));const projection=record(raw.projection);if(record(projection.thread).id!==threadId)throw new Error();
     // Provider session metadata can contain credential-bearing runtime configuration.
-    const allowed=['thread','runs','attempts','nodes','subagents','runtimeRequests','messages','plans','turnItems','contextHandoffs','contextTransfers','updatedAt'];
-    return {hostId,snapshotSequence:raw.snapshotSequence,projection:Object.fromEntries(allowed.map(k=>[k,projection[k]??null])),observedAt:new Date().toISOString()};
+    const allowed=['visibleTurnItems','thread','runs','attempts','nodes','subagents','runtimeRequests','messages','plans','turnItems','contextHandoffs','contextTransfers','updatedAt'];
+    const coverage=historyCoverage(raw);
+    return {hostId,coverage,snapshotSequence:raw.snapshotSequence,projection:Object.fromEntries(allowed.map(k=>[k,projection[k]??null])),observedAt:new Date().toISOString()};
   }catch{throw new ApiError(503,'Native thread unavailable');}
+}
+
+// Unknown metadata is a read failure, never evidence of complete history.
+export function historyCoverage(raw:RecordValue):HistoryCoverage {
+  if(typeof raw.hasMoreHistory!=='boolean'||!(raw.historyCursor===null||typeof raw.historyCursor==='string'&&raw.historyCursor.length>0)||raw.hasMoreHistory!==(raw.historyCursor!==null)||raw.turnItemsOmitLocalVisible===true)throw new Error('Invalid bounded history coverage');
+  if(!(raw.latestLocalTurnOrdinal===null||Number.isSafeInteger(raw.latestLocalTurnOrdinal)&&Number(raw.latestLocalTurnOrdinal)>=0))throw new Error('Invalid history watermark');
+  return {historyCursor:raw.historyCursor as string|null,hasMoreHistory:raw.hasMoreHistory,latestLocalTurnOrdinal:raw.latestLocalTurnOrdinal as number|null,payloadBudgetExceeded:raw.payloadBudgetExceeded===true};
+}
+export async function historyPage(hostId:string,threadId:string,cursor:string):Promise<HistoryPage> {
+  const host=config().hosts.find(h=>h.id===hostId);if(!host)throw new ApiError(404,'Unknown host');
+  try {
+    const raw=record(await read(host,threadId,false,cursor));
+    if(!Number.isSafeInteger(raw.snapshotSequence)||!Array.isArray(raw.items)||typeof raw.hasMoreHistory!=='boolean'||!(raw.nextCursor===null||typeof raw.nextCursor==='string'&&raw.nextCursor.length>0)||raw.hasMoreHistory!==(raw.nextCursor!==null)||raw.nextCursor===cursor)throw new Error();
+    const items=raw.items.map(value=>{const row=record(value);if(!Number.isSafeInteger(row.position)||Number(row.position)<0||!['local','inherited','synthetic'].includes(String(row.visibility))||typeof row.sourceThreadId!=='string'||typeof row.sourceItemId!=='string'||typeof record(row.item).type!=='string')throw new Error();return row as HistoryPage['items'][number];});
+    return {hostId,threadId,snapshotSequence:Number(raw.snapshotSequence),items,nextCursor:raw.nextCursor as string|null,hasMoreHistory:raw.hasMoreHistory,observedAt:new Date().toISOString()};
+  }catch{throw new ApiError(503,'Native older history unavailable; coverage remains partial');}
 }

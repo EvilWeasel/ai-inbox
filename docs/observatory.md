@@ -1,8 +1,11 @@
 # Agent Observatory
 
 `/observatory` is an independent private Inbox feature. Select a connected agent
-in the searchable list or node-card inventory to give its dashboard the full
-viewport. Raw chat is collapsed by default. The route does not start, resume,
+in the searchable list or parent/child graph to give its dashboard the remaining
+viewport. On desktop, current work, completed and next tasks, current/recent tools,
+pending approvals and explicit stops share a constrained grid with independently
+scrollable, keyboard-focusable panes. Mobile uses readable stacked panes and
+section navigation. Identity, history and raw chat are separate disclosures. Raw chat is collapsed by default. The route does not start, resume,
 approve, cancel or execute an agent or command.
 
 ## Data and authority
@@ -62,6 +65,15 @@ a transition immediately after verification remains a distributed race.
 - `GET /api/observatory/actions/read` returns `{hosts,threads,canvases,observedAt}`.
 - `GET /api/observatory/actions/read?hostId=…&threadId=…` returns focused native
   `{hostId,snapshotSequence,projection,canvases,history,observedAt}`.
+- Focused reads use the native `/api/orchestration/threads/:id/bounded` endpoint,
+  with complete control-plane arrays and a recent timeline window. They add
+  `coverage:{historyCursor,hasMoreHistory,latestLocalTurnOrdinal,payloadBudgetExceeded}`.
+  No compact-turn-items opt-in is sent.
+- Add `&cursor=…` for a native `/api/orchestration/threads/:id/history?cursor=…` page.
+  The cursor is opaque and encoded without parsing. Response:
+  `{hostId,threadId,snapshotSequence,items,nextCursor,hasMoreHistory,observedAt}`.
+  Each item preserves `position`, `visibility`, `sourceThreadId`, `sourceItemId`
+  and its nested native `item`, including compaction/context markers.
 - Add `&itemId=…` to retrieve one actual persisted tool item, including output
   omitted from the projection. This uses scoped native WebSocket RPC
   `orchestration.getTurnItem`, verifies thread/item identity and closes the socket.
@@ -120,10 +132,29 @@ after each read; detail refresh starts eight seconds after each read. Streams do
 not overlap themselves. Agent selection aborts and ignores prior responses.
 Unavailable detail retains the last successful selected-agent evidence with an
 explicit stale warning and timestamp. Offline hosts do not invent thread lists.
-The first node view is a parent-labeled card inventory; dependency graph edges
-and older-history pagination are not implemented. Latest 40 actual tool events
-are rendered with explicit projection counts. Oversize full thread reads fail
-explicitly; there is no claim of complete history for such threads. Automatic
+The node view draws parent-to-child edges only for authoritative `parentThreadId`
+links with matching host identity. It shows the currently loaded inventory slice
+(60 more per action); missing or filtered parents are labeled outside the view.
+Tab/Enter selects nodes; arrow keys move focus between parent, child and adjacent
+nodes. No inferred cross-host edges or continuous animation is used.
+
+Recent 40 actual tool events plus active events in the bounded window are rendered
+with explicit counts, actual tool names or bounded first command lines. Native
+reads and history pages retain the same 16 MiB/12 second bounds and five-second
+cache. Older history loads explicitly and sequentially, retaining at most ten
+pages in the browser. It never merges older run records into live control state;
+current run/attempt selection continues to use the maximum run ordinal from the
+latest bounded control-plane projection. Page failures preserve loaded evidence
+and the retry cursor. Selection changes abort history reads; a changed initial
+coverage cursor resets loaded older pages so incompatible windows cannot merge.
+Native compaction markers and inherited source identities remain visible.
+
+Coverage is shown separately from tool counts. Unknown/inconsistent metadata,
+failed or oversized reads never establish complete history. Reaching a null
+next cursor means the source end for that cursor chain, not a guarantee of all
+provider content or full outputs. Unsupported bounded endpoints fail explicitly.
+The viewport structure is covered by component tests; actual desktop/mobile
+pixel fit and keyboard scrolling require root browser acceptance. Automatic
 instrumentation of every agent is a separate integration: a canvas appears only
 after a bound agent actually publishes.
 

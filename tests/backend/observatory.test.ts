@@ -26,11 +26,11 @@ test('shared Agent-Native transport binds writes, validates active run and attem
  const dir=mkdtempSync(join(tmpdir(),'obs-action-'));const oldEnv={...process.env};const oldFetch=globalThis.fetch;
  const token='a'.repeat(40);const credentialFile=join(dir,'peer.json'),configFile=join(dir,'config.json'),producerFile=join(dir,'producer.json');
  writeFileSync(credentialFile,JSON.stringify({credential:{token:'native-read-token'}}),{mode:0o600});
- writeFileSync(configFile,JSON.stringify({hosts:[{id:'host',label:'Host',environmentId:'environment',origin:'http://127.0.0.1:9',credentialFile,credentialPath:['credential','token']}],publishers:[{producerId:'publisher',...identity}]}),{mode:0o600});
+ writeFileSync(configFile,JSON.stringify({hosts:[{id:'host',label:'Host',environmentId:'environment',origin:'https://native.example.test',credentialFile,credentialPath:['credential','token']}],publishers:[{producerId:'publisher',...identity}]}),{mode:0o600});
  writeFileSync(producerFile,JSON.stringify({producers:[{id:'publisher',host:'host',tokenHash:createHash('sha256').update(token).digest('hex')}]}),{mode:0o600});
  process.env.INBOX_OBSERVATORY_CONFIG=configFile;process.env.INBOX_DATA_DIR=join(dir,'data');process.env.INBOX_PRODUCERS_FILE=producerFile;delete process.env.INBOX_ORIGIN;
  let activeAttempt='attempt';let nativeCalls=0;
- globalThis.fetch=async url=>{nativeCalls++;return Response.json(String(url).includes('.well-known')?{environmentId:'environment',orchestrationProtocolVersion:2}:{projection:{thread:{id:'thread'},runs:[{id:'run',activeAttemptId:activeAttempt,status:'running'}]},snapshotSequence:7});};
+ globalThis.fetch=async url=>{nativeCalls++;return Response.json(String(url).includes('.well-known')?{environmentId:'environment',orchestrationProtocolVersion:2}:{historyCursor:null,hasMoreHistory:false,latestLocalTurnOrdinal:null,projection:{thread:{id:'thread'},runs:[{id:'run',activeAttemptId:activeAttempt,status:'running'}]},snapshotSequence:7});};
  const request=(body:unknown,bearer=token)=>new Request('http://localhost/api/observatory/actions/publish',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${bearer}`},body:JSON.stringify(body)});
  try{
   const input={...identity,expectedRevision:0,canvas};

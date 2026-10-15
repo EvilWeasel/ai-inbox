@@ -1,6 +1,6 @@
 import { afterEach,describe,it,expect,vi } from 'vitest';
 import { render,screen,fireEvent,waitFor,cleanup } from '@testing-library/react';
-import { Observatory } from './observatory';
+import { Observatory,toolLabel } from './observatory';
 const inventory={hosts:[{id:'host',label:'Connected host',environmentId:'env',status:'online',threadCount:2,message:'Actual inventory'}],threads:[{id:'one',hostId:'host',title:'First agent',status:'running'},{id:'two',hostId:'host',title:'Second agent',status:'running'}],canvases:[],observedAt:'2026-10-15T20:00:00Z'};
 const focus=(title:string)=>({hostId:'host',projection:{thread:{title,runtimeMode:'approval-required'},runs:[{id:'run',ordinal:1,activeAttemptId:'attempt',status:'running'}],turnItems:[{id:'todo',runId:'run',type:'todo_list',steps:[{step:'Completed bounded work',status:'completed'},{step:'Verify active behavior',status:'inProgress'}]},{id:'reason',type:'reasoning',text:'Should never appear as a tool'},{id:'command',type:'command_execution',title:'Actual command',input:'read-only command',status:'completed',outputOmitted:true}],runtimeRequests:[{id:'expired',kind:'approval',status:'expired'},{id:'pending',kind:'tool-approval',status:'pending'}],messages:[],plans:[],subagents:[],attempts:[]},canvases:[],history:[],observedAt:'2026-10-15T20:00:00Z',snapshotSequence:1});
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
@@ -10,7 +10,7 @@ describe('Observatory evidence boundary',()=>{
   render(<Observatory/>);fireEvent.click(await screen.findByRole('button',{name:/First agent/}));
   expect((await screen.findAllByText('Verify active behavior')).length).toBe(2);expect(screen.getByText(/No agent-authored canvas/)).toBeTruthy();
   expect(screen.queryByText('Should never appear as a tool')).toBeNull();expect(screen.getByText('tool-approval · pending')).toBeTruthy();expect(screen.queryByText('approval · expired')).toBeNull();
-  fireEvent.click(screen.getByText('Actual command'));fireEvent.click(screen.getByRole('button',{name:'Load actual result'}));expect(await screen.findByText(/Persisted actual result/)).toBeTruthy();expect(screen.queryByRole('heading',{name:/Raw chat/})).toBeNull();
+  fireEvent.click(screen.getByText('read-only command',{selector:'summary span'}));fireEvent.click(screen.getByRole('button',{name:'Load actual result'}));expect(await screen.findByText(/Persisted actual result/)).toBeTruthy();expect(screen.queryByRole('heading',{name:/Raw chat/})).toBeNull();
  });
  it('does not allow a late response from a previously selected agent to replace current evidence',async()=>{
   let resolveFirst!:(value:unknown)=>void;
@@ -19,4 +19,22 @@ describe('Observatory evidence boundary',()=>{
   fireEvent.click(screen.getByRole('button',{name:'Select agent'}));fireEvent.click(screen.getByRole('button',{name:/Second agent/}));expect(await screen.findByRole('heading',{name:'Second evidence'})).toBeTruthy();
   resolveFirst({ok:true,json:async()=>focus('Stale first evidence')});await Promise.resolve();await Promise.resolve();expect(screen.queryByRole('heading',{name:'Stale first evidence'})).toBeNull();expect(screen.getByRole('heading',{name:'Second evidence'})).toBeTruthy();
  });
+});
+
+it('keeps the five essential sections together, focusable, with identity and history collapsed and no duplicated summary',async()=>{
+ const nativeFocus=focus('Current thread');nativeFocus.projection.runs.push({id:'older-run-last-in-array',ordinal:0,activeAttemptId:'old-attempt',status:'complete'});
+ const evidence={...nativeFocus,canvases:[{hostId:'host',threadId:'one',runId:'run',attemptId:'attempt',revision:2,publisherId:'producer',publishedAt:'2026-10-16T00:00:00Z',canvas:{title:'Agent Observability',summary:'One current summary only',status:'working',currentStep:'Validate compact viewport',plan:Array.from({length:6},(_,i)=>({id:String(i),text:`Useful step ${i}`,status:i===5?'active':'complete'})),checkpoints:[],layout:{columns:2,panels:['summary','plan','activity','history'],accent:'green'}}}]};
+ vi.stubGlobal('fetch',vi.fn(async(input:string)=>({ok:true,json:async()=>input.includes('threadId=')?evidence:inventory})));
+ const {container}=render(<Observatory/>);fireEvent.click(await screen.findByRole('button',{name:/First agent/}));await screen.findByRole('heading',{name:'Agent Observability'});
+ const overview=screen.getByRole('region',{name:'At a glance agent overview'});
+ for(const name of ['Current work','Completed work and next tasks','Current and recent tools','Pending approvals and requests','Explicit intentional stops']){
+  const pane=screen.getByRole('article',{name});expect(overview.contains(pane)).toBe(true);expect(pane.getAttribute('tabindex')).toBe('0');pane.focus();expect(document.activeElement).toBe(pane);
+ }
+ expect(screen.getAllByText('One current summary only')).toHaveLength(1);expect(screen.getAllByText(/Useful step/)).toHaveLength(6);expect(screen.getByRole('button',{name:'Load actual result'})).toBeTruthy();
+ expect(container.querySelector('.obs-identity')?.hasAttribute('open')).toBe(false);expect(container.querySelector('.obs-depth')?.hasAttribute('open')).toBe(false);expect(container.querySelector('.obs-selected')).toBeTruthy();
+});
+it('uses actual tool names and bounded command previews for scanning',()=>{
+ expect(toolLabel({type:'dynamic_tool',title:'dynamic_tool',toolName:'preview_snapshot'})).toBe('preview_snapshot');
+ expect(toolLabel({type:'command_execution',input:'rg exact-pattern src\nsecond command'})).toBe('rg exact-pattern src');
+ expect(toolLabel({type:'command_execution',input:{command:'x'.repeat(300)}})).toHaveLength(140);
 });

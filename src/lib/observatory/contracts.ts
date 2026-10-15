@@ -15,4 +15,7 @@ export type Revision = Identity & {revision:number; publishedAt:string; publishe
 export type NativeThread = {id:string; hostId:string; title:string; status:string; runId:string|null; parentThreadId:string|null; updatedAt:string|null};
 export type HostStatus = {id:string;label:string;environmentId:string;status:'online'|'offline'|'unknown';observedAt:string|null;snapshotSequence:number|null;threadCount:number;message:string};
 export type Snapshot = {hosts:HostStatus[];threads:NativeThread[];canvases:Revision[];observedAt:string};
-export const readSchema=z.object({hostId:id.optional(),threadId:id.optional(),itemId:id.optional()}).strict().refine(v=>Boolean(v.hostId)===Boolean(v.threadId),'Host and thread required together').refine(v=>!v.itemId||Boolean(v.threadId),'Item requires thread');
+export type HistoryCoverage = {historyCursor:string|null;hasMoreHistory:boolean;latestLocalTurnOrdinal:number|null;payloadBudgetExceeded:boolean};
+export type HistoryRow = {position:number;visibility:'local'|'inherited'|'synthetic';sourceThreadId:string;sourceItemId:string;item:Record<string,unknown>};
+export type HistoryPage = {hostId:string;threadId:string;snapshotSequence:number;items:HistoryRow[];nextCursor:string|null;hasMoreHistory:boolean;observedAt:string};
+export const readSchema=z.object({hostId:id.optional(),threadId:id.optional(),itemId:id.optional(),cursor:z.string().min(1).max(16384).optional()}).strict().refine(v=>Boolean(v.hostId)===Boolean(v.threadId),'Host and thread required together').refine(v=>!(v.itemId||v.cursor)||Boolean(v.threadId),'Item or cursor requires thread').refine(v=>!(v.itemId&&v.cursor),'Item and history reads are separate');
