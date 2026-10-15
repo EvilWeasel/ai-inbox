@@ -36,3 +36,22 @@ class RankingTests(unittest.TestCase):
     db.execute('INSERT INTO orchestration_v2_projection_messages VALUES(?,?,?,?)',(json.dumps({'createdBy':creator,'creationSource':source,'text':text}),thread,'user',ranking.stamp()))
    db.commit();db.close();records,_=ranking.context({'contextDatabases':[str(path)]})
    self.assertEqual([r['text'] for r in records],['real preference'])
+
+ def test_schema_requires_each_target_once_without_exposing_database_ids(self):
+  payload={'items':[{'id':'uuid-long-a','title':'First'},{'id':'uuid-long-b','title':'Second'}], 'catalog':[{'id':'uuid-other','title':'Other'},{'id':'uuid-long-a','title':'First'},{'id':'uuid-long-b','title':'Second'}]}
+  schema,request,targets=ranking.output_contract(payload)
+  self.assertEqual(targets,{'item_2':'uuid-long-a','item_3':'uuid-long-b'})
+  contract=schema['properties']['scores']
+  self.assertEqual(set(contract['required']),set(targets));self.assertFalse(contract['additionalProperties'])
+  self.assertNotIn('uuid-',json.dumps(request));self.assertNotIn('uuid-',json.dumps(schema))
+  rows=ranking.parse_scores(json.dumps({'scores':{'item_3':{'score':21,'reason':'Less useful'},'item_2':{'score':85,'reason':'Useful'}}}),targets)
+  self.assertEqual(rows,[{'id':'uuid-long-a','score':85,'reason':'Useful'},{'id':'uuid-long-b','score':21,'reason':'Less useful'}])
+
+ def test_rejects_missing_extra_duplicate_or_invalid_scores_without_guessing(self):
+  targets={'item_1':'a','item_2':'b'}
+  entry={'score':80,'reason':'Useful'}
+  invalid=[json.dumps({'scores':{'item_1':entry}}),json.dumps({'scores':{'item_1':entry,'item_2':entry,'item_3':entry}}),
+   '{"scores":{"item_1":{"score":80,"reason":"first"},"item_1":{"score":20,"reason":"duplicate"},"item_2":{"score":10,"reason":"second"}}}',
+   json.dumps({'scores':{'item_1':entry,'item_2':{'score':True,'reason':'bad'}}}),json.dumps({'scores':{'item_1':entry,'item_2':{'score':99,'reason':''}}})]
+  for raw in invalid:
+   with self.subTest(raw=raw),self.assertRaises(ValueError):ranking.parse_scores(raw,targets)
