@@ -28,7 +28,8 @@ export function detail(db: InboxDatabase, id: string, includeReport = true) {
     WHERE item_id=? ORDER BY updated_at DESC,created_at DESC,id DESC LIMIT 1`).get(id) as {state:InboxItem['audioStatus'];body_sha256:string}|undefined);
   let audioStatus: InboxItem['audioStatus'] = row.audioFile ? 'ready' : (request?.state ?? null);
   if (request && request.body_sha256 !== bodySha && !row.audioFile) audioStatus='superseded';
-  return publicItem(row,audioStatus,includeReport,'reportAvailable' in row ? Boolean(row.reportAvailable) : !!row.report);
+  const importance = db.sqlite.prepare('SELECT score,reason,ranked_at AS rankedAt FROM item_rankings WHERE item_id=?').get(id) as InboxItem['importance'];
+  return {...publicItem(row,audioStatus,includeReport,'reportAvailable' in row ? Boolean(row.reportAvailable) : !!row.report), importance: importance ?? null};
 }
 export function patchItem(db: InboxDatabase, id: string, input: unknown) {
   const patch = patchSchema.parse(input);
@@ -42,10 +43,16 @@ export function patchItem(db: InboxDatabase, id: string, input: unknown) {
     return detail(db,id);
   }).immediate();
 }
-const cursorSchema = z.object({ at:z.string().datetime(), id:z.string().uuid(), filter:z.string().length(64) }).strict();
+const cursorSchema = z.object({ at:z.string().datetime(), id:z.string().uuid(), filter:z.string().length(64), score:z.number().optional(), ranked:z.number().optional() }).strict();
 export function listItems(db: InboxDatabase, input: unknown): ItemList {
   const query = querySchema.parse(input);
-  const filter = createHash('sha256').update(JSON.stringify([query.view,query.kind??null,query.q])).digest('hex');
+  const filter = createHash('sha256').update(JSON.stringify([query.view,query.kind??null,query.q,query.sort, (query.sort === 'important' || query.sort === 'least-important') ? db.sqlite.prepare("SELECT id FROM ranking_runs WHERE state='ready' ORDER BY completed_at DESC,id DESC LIMIT 1").get() : null])).digest('hex');
+  const importanceSort = query.sort === 'important' || query.sort === 'least-important';
+  const direction = query.sort === 'oldest' ? 'ASC' : 'DESC';
+  const op = direction === 'ASC' ? '>' : '<';
+  const scoreOp = query.sort === 'least-important' ? '>' : '<';
+  const rankExpr = '(CASE WHEN id IN (SELECT item_id FROM item_rankings) THEN 1 ELSE 0 END)';
+  const scoreExpr = 'COALESCE((SELECT score FROM item_rankings WHERE item_id=items.id),0)';
   const where: string[] = []; const values: (string|number)[] = [];
   if (query.view === 'inbox') where.push('archived_at IS NULL');
   if (query.view === 'unread') where.push('archived_at IS NULL AND read_at IS NULL');
@@ -68,13 +75,19 @@ export function listItems(db: InboxDatabase, input: unknown): ItemList {
         if (!/^[A-Za-z0-9_-]+$/.test(query.cursor)) throw new Error();
         const cursor = cursorSchema.parse(JSON.parse(Buffer.from(query.cursor,'base64url').toString('utf8')));
         if (cursor.filter !== filter) throw new Error();
-        where.push('(published_at < ? OR (published_at = ? AND id < ?))'); values.push(cursor.at,cursor.at,cursor.id);
+        if (importanceSort) {
+          if (cursor.score === undefined || cursor.ranked === undefined) throw new Error();
+          where.push(`(${rankExpr} < ? OR (${rankExpr} = ? AND (${scoreExpr} ${scoreOp} ? OR (${scoreExpr} = ? AND (published_at < ? OR (published_at = ? AND id < ?))))))`);
+          values.push(cursor.ranked,cursor.ranked,cursor.score,cursor.score,cursor.at,cursor.at,cursor.id);
+        } else {
+          where.push(`(published_at ${op} ? OR (published_at = ? AND id ${op} ?))`); values.push(cursor.at,cursor.at,cursor.id);
+        }
       } catch { throw new ApiError(400,'Invalid cursor'); }
     }
-    const rows = db.sqlite.prepare(`SELECT id FROM items${sqlWhere()} ORDER BY published_at DESC,id DESC LIMIT ?`).all(...values,query.limit+1) as {id:string}[];
+    const rows = db.sqlite.prepare(`SELECT id FROM items${sqlWhere()} ORDER BY ${importanceSort ? `${rankExpr} DESC,${scoreExpr} ${query.sort === 'least-important' ? 'ASC' : 'DESC'},published_at DESC,id DESC` : `published_at ${direction},id ${direction}`} LIMIT ?`).all(...values,query.limit+1) as {id:string}[];
     const page = rows.slice(0,query.limit).map(r => detail(db,r.id,false));
     const last = page.at(-1);
-    const nextCursor = rows.length > query.limit && last ? Buffer.from(JSON.stringify({at:last.publishedAt,id:last.id,filter})).toString('base64url') : null;
+    const nextCursor = rows.length > query.limit && last ? Buffer.from(JSON.stringify({at:last.publishedAt,id:last.id,filter, ...(importanceSort ? {score:last.importance?.score ?? 0,ranked:last.importance ? 1 : 0} : {})})).toString('base64url') : null;
     return { items:page,nextCursor,counts,total };
   })();
 }

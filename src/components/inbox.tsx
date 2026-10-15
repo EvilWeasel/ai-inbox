@@ -166,6 +166,34 @@ export function Inbox() {
   const rawKind = params.get("kind");
   const kind = rawKind === "briefing" || rawKind === "alert" || rawKind === "result" ? rawKind : "";
   const selectedId = params.get("item");
+  const rawSort=params.get("sort");
+  const sort=["oldest","important","least-important"].includes(rawSort ?? "") ? rawSort! : "newest";
+  const [ranking,setRanking]=useState<{state:string;createdAt:string;completedAt?:string;error?:string;contextInfo?:string}|null>(null);
+  const [rankingError,setRankingError]=useState("");
+  const [rankingStarting,setRankingStarting]=useState(false);
+  const rankingBusy=rankingStarting || ranking?.state === "running";
+  useEffect(() => {
+    let cancelled=false;
+    let timer:ReturnType<typeof setTimeout>;
+    const poll=async () => {
+      try {
+        const data=await request<{run:typeof ranking}>("/api/ranking");
+        if(cancelled)return;
+        setRanking(data.run);
+        if(data.run?.state === "running") timer=setTimeout(poll,3000);
+      } catch { if(!cancelled)setRankingError("Ranking status unavailable. Please try again."); }
+    };
+    void poll();
+    return () => {cancelled=true;clearTimeout(timer);};
+  },[ranking?.state]);
+  const rankNow=async () => {
+    setRankingStarting(true);setRankingError("");
+    try {
+      const data=await request<{run:NonNullable<typeof ranking>}>("/api/ranking",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+      setRanking(data.run);
+    } catch(error) {setRankingError(error instanceof Error ? error.message : "Ranking failed.");}
+    finally {setRankingStarting(false);}
+  };
   const [search, setSearch] = useState(q);
   const searchInput = useRef<HTMLInputElement>(null);
   const focusSearchAfterNavigation = useRef(false);
@@ -255,6 +283,7 @@ export function Inbox() {
     view,
     q,
     ...(kind ? { kind } : {}),
+    sort,
     limit: "30",
   }).toString();
   currentRoute.current = { listQuery, selectedId };
@@ -736,6 +765,23 @@ export function Inbox() {
                 </span>
               )}
             </div>
+            <div className="ranking-controls">
+              <label htmlFor="inbox-sort">Sort</label>
+              <select id="inbox-sort" value={sort} onChange={event => navigate({sort:event.target.value,item:null})}>
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="important">Most important first</option>
+                <option value="least-important">Least important first</option>
+              </select>
+              <Button variant="outline" disabled={rankingBusy} onClick={() => void rankNow()}>
+                {rankingBusy && <LoaderCircle className="animate-spin" aria-hidden="true" />}
+                {rankingBusy ? "Ranking…" : "Rank with AI"}
+              </Button>
+            </div>
+            <p className="ranking-status" role="status">
+              {rankingBusy ? "Evaluating all current inbox items using your recent personal instructions…" : ranking?.state === "ready" ? `AI ranking updated ${formatDate(ranking.completedAt ?? ranking.createdAt,true)}. New or changed items appear as unranked.` : "AI ranking runs only when requested and uses recent instructions from connected personal agent stores."}
+            </p>
+            {(rankingError || ranking?.state === "failed") && <p className="pagination-error" role="alert">{rankingError || ranking?.error}</p>}
           </header>
           <div
             id="item-list"
@@ -813,6 +859,7 @@ export function Inbox() {
                         </span>
                         <span className="item-summary">
                           {item.summary || "Open to read this item."}
+                          {(sort === "important" || sort === "least-important") && <span className="importance-reason">{item.importance ? `${item.importance.score}/100 · ${item.importance.reason}` : "Unranked · Run AI ranking to evaluate this item"}</span>}
                         </span>
                         <span className="item-foot">
                           {item.kind === "briefing" && item.edition && <span>{item.edition[0].toUpperCase() + item.edition.slice(1)} edition</span>}

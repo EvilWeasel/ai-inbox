@@ -96,6 +96,7 @@ function serverChange(baseline = false) {
   }));
 }
 const fetchMock = vi.fn<typeof fetch>();
+const rankingMock=vi.fn<typeof fetch>();
 beforeEach(() => {
   eventRevision = 0;
   vi.stubGlobal("EventSource", InboxEventSource);
@@ -122,7 +123,8 @@ beforeEach(() => {
     navigation.listeners.forEach(fn => fn());
   });
   fetchMock.mockReset();
-  vi.stubGlobal("fetch", fetchMock);
+  rankingMock.mockReset().mockResolvedValue(response({run:null}));
+  vi.stubGlobal("fetch", (url:Parameters<typeof fetch>[0],options?:RequestInit) => String(url) === "/api/ranking" ? rankingMock(url,options) : fetchMock(url,options));
 });
 afterEach(() => {
   cleanup();
@@ -845,4 +847,19 @@ describe("live invalidation integration", () => {
     expect(screen.getByRole("button", { name: /Older report/ })).toBeTruthy();
     expect(screen.getByLabelText("3 inbox items")).toBeTruthy();
   });
+});
+
+
+it("starts importance ranking only on demand and preserves sort in navigation",async()=>{
+ api({...fixture,importance:{score:88,reason:"Useful new feature",rankedAt:"2026-10-15T12:00:00Z"}});
+ render(<Inbox />);
+ await screen.findByRole("button",{name:/Test release/});
+ expect(rankingMock.mock.calls.every(([,options])=>!options?.method)).toBe(true);
+ fireEvent.change(screen.getByLabelText("Sort"),{target:{value:"important"}});
+ await waitFor(()=>expect(fetchMock.mock.calls.some(([url])=>String(url).includes("sort=important"))).toBe(true));
+ expect(screen.getByText(/88\/100 · Useful new feature/)).toBeTruthy();
+ rankingMock.mockResolvedValue(response({run:{state:"running",createdAt:"2026-10-15T12:00:00Z"}}));
+ fireEvent.click(screen.getByRole("button",{name:"Rank with AI"}));
+ await waitFor(()=>expect(rankingMock.mock.calls.filter(([,options])=>options?.method==="POST")).toHaveLength(1));
+ expect(screen.getByRole("button",{name:"Ranking…"}).hasAttribute("disabled")).toBe(true);
 });

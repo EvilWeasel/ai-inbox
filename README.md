@@ -66,6 +66,10 @@ to read the complete Markdown. Reports are validated structured data, with no
 producer HTML or scripts. See [visual reports](docs/visual-reports.md) for the
 optional producer contract and local import helper.
 
+Items can also be sorted by personal importance. **Rank with AI** evaluates the current
+inbox on explicit request using recent owner instructions, with a reason per item.
+See [importance ranking](docs/importance-ranking.md) for context scope and setup.
+
 ## Extension direction
 
 The first release focuses on a durable news inbox. Future work can add an

@@ -220,4 +220,28 @@ export function migrate(sqlite: Database.Database) {
     `);
   }).immediate();
 
+  sqlite.transaction(() => {
+    if (sqlite.prepare('SELECT version FROM inbox_migrations WHERE version=7').get()) return;
+    sqlite.exec(`
+      CREATE TABLE ranking_runs (
+        id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK(state IN ('running','ready','failed')),
+        created_at TEXT NOT NULL, completed_at TEXT, error TEXT, context_info TEXT
+      );
+      CREATE UNIQUE INDEX ranking_one_running ON ranking_runs(state) WHERE state='running';
+      CREATE TABLE item_rankings (
+        item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL REFERENCES ranking_runs(id), content_sha256 TEXT NOT NULL,
+        score INTEGER NOT NULL CHECK(score BETWEEN 0 AND 100), reason TEXT NOT NULL,
+        ranked_at TEXT NOT NULL
+      );
+      CREATE TRIGGER ranking_revision AFTER UPDATE OF state ON ranking_runs BEGIN
+        UPDATE inbox_revision SET revision=revision+1 WHERE singleton=1;
+      END;
+      CREATE TRIGGER ranking_invalidate AFTER UPDATE OF title,body,summary ON items
+      WHEN old.title IS NOT new.title OR old.body IS NOT new.body OR old.summary IS NOT new.summary
+      BEGIN DELETE FROM item_rankings WHERE item_id=new.id; END;
+      INSERT INTO inbox_migrations(version) VALUES(7);
+    `);
+  }).immediate();
+
 }
