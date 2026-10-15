@@ -27,3 +27,17 @@ it('retains partial coverage when the source returns a repeated cursor',async()=
  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>page(coverage.historyCursor)})));
  render(<NativeHistory {...props}/>);fireEvent.click(screen.getByRole('button',{name:'Load older history'}));expect(await screen.findByRole('alert')).toBeTruthy();expect(screen.queryByText(/End of source history reached/)).toBeNull();expect(screen.getByRole('button',{name:'Retry older history'})).toBeTruthy();
 });
+it('retains loaded historical pages across live sequence changes and restarts only explicitly',async()=>{
+ const requested:string[]=[];
+ vi.stubGlobal('fetch',vi.fn(async(input:string)=>{requested.push(new URL(input,'https://inbox.example.test').searchParams.get('cursor')!);return {ok:true,json:async()=>page('older chain cursor')};}));
+ const {rerender}=render(<NativeHistory {...props}/>);
+ fireEvent.click(screen.getByRole('button',{name:'Load older history'}));
+ expect(await screen.findByText(/1 older rows loaded across 1 pages/)).toBeTruthy();
+ rerender(<NativeHistory {...props} snapshotSequence={10} coverage={{...coverage,historyCursor:'new live sequence cursor'}}/>);
+ expect(screen.getByText(/1 older rows loaded across 1 pages/)).toBeTruthy();
+ expect(screen.getByText(/context_compaction · inherited/)).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'Restart history from current window'}));
+ expect(screen.getByText(/0 older rows loaded across 0 pages/)).toBeTruthy();
+ fireEvent.click(screen.getByRole('button',{name:'Load older history'}));
+ await waitFor(()=>expect(requested).toEqual([coverage.historyCursor,'new live sequence cursor']));
+});
