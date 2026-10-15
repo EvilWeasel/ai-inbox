@@ -5,6 +5,7 @@ Uses existing private bridge/producer credentials. No key creation, audio,
 background instrumentation, redirect following, or automatic conflict retry.
 """
 import argparse
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -58,14 +59,20 @@ def private_json(filename, limit=64 * 1024):
     return value
 
 
-def origin(value, allow_path=False):
+def origin(value, allow_path=False, allow_private_http=False):
     parsed = urllib.parse.urlsplit(value)
     if (parsed.scheme not in {"http", "https"} or not parsed.hostname
             or parsed.username or parsed.password or parsed.query or parsed.fragment
             or not allow_path and parsed.path not in {"", "/"}):
         raise AgentError("Invalid private origin")
     if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
-        raise AgentError("HTTPS or loopback is required")
+        try:
+            address = ipaddress.ip_address(parsed.hostname)
+            private = address.is_private or address in ipaddress.ip_network("100.64.0.0/10")
+        except ValueError:
+            private = False
+        if allow_private_http is not True or not private:
+            raise AgentError("HTTPS, loopback or explicitly configured private HTTP is required")
     if parsed.port is not None and not 1 <= parsed.port <= 65535:
         raise AgentError("Invalid private port")
     return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
@@ -76,6 +83,10 @@ def credential(filename, pointer=None):
     if pointer is None:
         value = raw.strip()
     else:
+        if isinstance(pointer, list):
+            if not pointer or any(not isinstance(key, str) or not key for key in pointer):
+                raise AgentError("Invalid token path")
+            pointer = "/" + "/".join(key.replace("~", "~0").replace("/", "~1") for key in pointer)
         if not isinstance(pointer, str) or pointer != "" and not pointer.startswith("/"):
             raise AgentError("RFC 6901 token pointer required")
         value = json.loads(raw)
@@ -173,7 +184,7 @@ def publish_agent(args):
         if key in bridge and bridge[key] != expected_environment:
             raise AgentError("Bridge environment mismatch")
     host_id, thread_id = checked_id(args.host_id), checked_id(args.thread_id)
-    native_origin = origin(bridge["t3Origin"])
+    native_origin = origin(bridge["t3Origin"], allow_private_http=bridge.get("t3AllowPrivateHttp", False))
     inbox_origin = origin(producer["endpoint"], allow_path=True)
     # Bind the requested environment before sending the native read credential.
     descriptor = request_json(native_origin, "/.well-known/t3/environment")

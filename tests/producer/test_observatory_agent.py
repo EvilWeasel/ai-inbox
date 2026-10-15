@@ -190,6 +190,13 @@ class ObservatoryAgentTests(unittest.TestCase):
         with self.assertRaises(agent.AgentError):
             agent.credential(link)
 
+    def test_private_http_requires_explicit_opt_in_and_private_ip(self):
+        self.assertEqual(agent.origin("http://100.64.1.2:1234", allow_private_http=True), "http://100.64.1.2:1234")
+        for value in ["http://8.8.8.8", "http://example.test"]:
+            with self.assertRaises(agent.AgentError):
+                agent.origin(value, allow_private_http=True)
+        self.assertEqual(agent.credential(self.token_path, ["credential", "token"]), self.native_token)
+
     def test_raw_token_and_json_pointer_escape_are_supported_without_copying(self):
         self.assertEqual(agent.credential(self.producer_token_path), self.producer_token)
         escaped = self.write("escaped.json", {"a/b": {"~token": self.native_token}})

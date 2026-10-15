@@ -237,7 +237,7 @@ canonical proof that the checkpoint was reached.
 thread. It reads the existing private bridge's `t3Origin`, `t3TokenFile` and
 `producerConfigFile`, and the producer config's existing `endpoint` and `tokenFile`.
 For a JSON token packet, set `t3TokenJsonPointer` (RFC 6901, for example
-`/credential/token`) in the private bridge; `t3TokenPointer` is accepted as an alias.
+`/credential/token`) or the existing array path in the private bridge; `t3TokenPointer` is accepted as an alias.
 Without a pointer the token file is read as plain text. The helper does not rewrite
 configuration or copy credentials into files or output.
 
@@ -246,7 +246,9 @@ before the helper sends a native read credential. If the bridge also declares
 `environmentId`, `t3EnvironmentId` or `expectedEnvironmentId`, each supplied binding
 must match the argument. Pass the configured Observatory host ID separately from
 producer host labels. Origins come only from private configuration, use HTTPS or
-loopback HTTP, reject credentials/query/fragment in URLs, and never follow redirects
+loopback HTTP by default. Existing private IPv4/IPv6 or CGNAT HTTP endpoints require
+explicit `t3AllowPrivateHttp: true` in the private bridge; public HTTP remains
+rejected. They reject credentials/query/fragment in URLs, and never follow redirects
 or environment proxies. Private inputs must be bounded owner-only regular files
 without symlink components. Native responses are bounded to 16 MiB/12 seconds.
 
