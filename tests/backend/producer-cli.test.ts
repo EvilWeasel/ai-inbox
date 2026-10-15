@@ -4,6 +4,8 @@ import { resolve } from 'node:path';
 
 test('portable producer protects credentials, final-only delivery and retry identity', () => {
   execFileSync('python3', ['-m', 'unittest', 'discover', '-s', 'tests/producer'], {
-    cwd: resolve(import.meta.dirname, '../..'), stdio: 'pipe', timeout: 15_000,
+    // This runs the entire producer suite, including fsync and real subprocess
+    // fixtures. Keep a finite suite budget without imposing a unit-test budget.
+    cwd: resolve(import.meta.dirname, '../..'), stdio: 'pipe', timeout: 120_000,
   });
 });
