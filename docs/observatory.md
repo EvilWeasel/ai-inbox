@@ -299,3 +299,19 @@ by every agent**. Root still owns deployment, private host opt-in configuration,
 instruction installation, real child/root run acceptance and browser evidence.
 Providers without an installed invoking instruction or equivalent integration
 will continue to have native evidence without an authored canvas.
+
+## Copy and visual acceptance
+
+Normal views and toolbars use concise task-relevant labels, not diagnostic
+paragraphs. Optional provenance and operating detail belongs in an intentional,
+keyboard-accessible disclosure. Unavailable functionality stays unavailable.
+
+For each UI change, the existing owner renders the actual production components
+and captures screenshots during development and after release. Visually inspect
+desktop, narrow mobile, keyboard-reduced height, enlarged text, long native states
+and keyboard focus/activation. Essential controls must remain readable, reachable
+and tappable; clipping controls to pass dimensions is not a fix. Store screenshot
+paths, inspected states, findings and corrections in the private acceptance
+receipt. Numeric overflow checks and automated tests supplement visual inspection.
+Hosted viewport emulation does not establish actual-device or installed-client
+acceptance, and grants no physical input or microphone authority.
