@@ -4,6 +4,7 @@ import { config } from '../config';
 import { openObservatory,publish,registered } from '../store';
 import { authenticateProducer,assertProducerRateLimit } from '../../result-ingest';
 import { assertCurrentIdentity } from './register';
+import {record} from '../native';
 import { ApiError } from '../../items';
 export default defineAction({description:'Publish your own bound agent canvas with compare-and-swap revision continuity; never controls another agent or executes content.',schema:publishSchema,http:{method:'POST'},authorize:async(input,ctx)=>{
   if(!ctx?.requestHeaders)throw new ApiError(401,'Producer authentication required');
@@ -16,5 +17,12 @@ export default defineAction({description:'Publish your own bound agent canvas wi
   }
   if(!binding&&!enrolled)throw new ApiError(403,'Publisher is not bound to this agent');
   assertProducerRateLimit(producer);
-  await assertCurrentIdentity(input);
+  const native=await assertCurrentIdentity(input);
+  if(input.canvas.workGraph){
+    const projection=record(native.projection),items=Array.isArray(projection.turnItems)?projection.turnItems.map(record):[],messages=Array.isArray(projection.messages)?projection.messages.map(record):[];
+    for(const node of input.canvas.workGraph.nodes)for(const evidence of node.evidence){
+      if(evidence.itemId&&!items.some(item=>item.id===evidence.itemId))throw new ApiError(409,'Work evidence item is outside the native window');
+      if(evidence.messageId&&!messages.some(message=>message.id===evidence.messageId))throw new ApiError(409,'Work evidence message is outside the native window');
+    }
+  }
 },run:async(input,ctx)=>{const producer=authenticateProducer(new Request('http://localhost',{headers:ctx?.requestHeaders}));const db=openObservatory();try{return publish(db,input,producer.id);}finally{db.close();}}});

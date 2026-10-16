@@ -30,11 +30,16 @@ test('shared Agent-Native transport binds writes, validates active run and attem
  writeFileSync(producerFile,JSON.stringify({producers:[{id:'publisher',host:'host',tokenHash:createHash('sha256').update(token).digest('hex')}]}),{mode:0o600});
  process.env.INBOX_OBSERVATORY_CONFIG=configFile;process.env.INBOX_DATA_DIR=join(dir,'data');process.env.INBOX_PRODUCERS_FILE=producerFile;delete process.env.INBOX_ORIGIN;
  let activeAttempt='attempt';let nativeCalls=0;
- globalThis.fetch=async url=>{nativeCalls++;return Response.json(String(url).includes('.well-known')?{environmentId:'environment',orchestrationProtocolVersion:2}:{historyCursor:null,hasMoreHistory:false,latestLocalTurnOrdinal:null,projection:{thread:{id:'thread'},runs:[{id:'run',ordinal:1,activeAttemptId:activeAttempt,status:'running'}]},snapshotSequence:7});};
+ globalThis.fetch=async url=>{nativeCalls++;return Response.json(String(url).includes('.well-known')?{environmentId:'environment',orchestrationProtocolVersion:2}:{historyCursor:null,hasMoreHistory:false,latestLocalTurnOrdinal:null,projection:{thread:{id:'thread'},runs:[{id:'run',ordinal:1,activeAttemptId:activeAttempt,status:'running'}],turnItems:[{id:'source-change',type:'file_change',fileName:'src/actual.ts'}],messages:[{id:'source-message',role:'assistant',text:'Recorded source checkpoint'}]},snapshotSequence:7});};
  const request=(body:unknown,bearer=token)=>new Request('http://localhost/api/observatory/actions/publish',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${bearer}`},body:JSON.stringify(body)});
  try{
   const input={...identity,expectedRevision:0,canvas};
   assert.equal((await dispatch(request(input),'publish')).status,201);
+  const workGraph={goal:'Verified source edit',orientation:'horizontal',nodes:[{id:'edit',title:'Actual edit',kind:'step',state:'completed',evidence:[{label:'Native edit',itemId:'invented'}]}],edges:[]};
+  assert.equal((await dispatch(request({...input,expectedRevision:1,canvas:{...canvas,workGraph}}),'publish')).status,409);
+  workGraph.nodes[0].evidence[0].itemId='source-change';
+  assert.equal((await dispatch(request({...input,expectedRevision:1,canvas:{...canvas,workGraph}}),'publish')).status,201);
+
   assert.equal((await dispatch(request(input),'publish')).status,409);
   assert.equal((await dispatch(request({...input,threadId:'other'}),'publish')).status,403);
   assert.equal((await dispatch(request(input,'b'.repeat(40)),'publish')).status,401);

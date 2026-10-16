@@ -1,12 +1,25 @@
 # Agent Observatory
 
-`/observatory` is an independent private Inbox feature. Select a connected agent
-in the searchable list or parent/child graph to give its dashboard the remaining
-viewport. On desktop, current work, completed and next tasks, current/recent tools,
-pending approvals and explicit stops share a constrained grid with independently
-scrollable, keyboard-focusable panes. Mobile uses readable stacked panes and
-section navigation. Identity, history and raw chat are separate disclosures. Raw chat is collapsed by default. The route does not start, resume,
-approve, cancel or execute an agent or command.
+`/observatory` is an independent Inbox feature. Its primary view is an
+agent-authored **work dependency graph**: feature outcome, meaningful steps,
+parallel agents, dependencies, active/waiting/completed work and linked results.
+The graph is not a shell-event graph. The agent updates its nodes, structure and
+orientation through the same typed canvas action and durable revision CAS.
+
+The agent picker retains native parent/child relationships. Selecting an agent
+opens its work graph; selecting a work node opens its results and evidence.
+Commands, runtime requests, compaction and raw chat are secondary disclosures.
+Native file-change facts and source messages remain useful when authoring has not
+yet been connected; missing native todo events do not establish that no work exists.
+Previous-run graphs are labelled rather than silently presented as current.
+
+The initial telemetry grid did **not** satisfy the requested product acceptance.
+Technical test and root self-publish receipts are historical implementation
+checks, not proof that a selected working agent uses the feature. Acceptance
+requires a real ongoing feature owner publishing meaningful live graph updates,
+including a subsequent run, usable evidence/results, inspected desktop/mobile
+screenshots and no manual refresh. Until that evidence is recorded, acceptance
+remains open. There is no all-agent adoption or native-provider attestation claim.
 
 ## Data and authority
 
@@ -315,3 +328,43 @@ paths, inspected states, findings and corrections in the private acceptance
 receipt. Numeric overflow checks and automated tests supplement visual inspection.
 Hosted viewport emulation does not establish actual-device or installed-client
 acceptance, and grants no physical input or microphone authority.
+
+## Agent-authored work graph contract
+
+The exact schema is exported as `workGraphSchema` in
+`src/lib/observatory/contracts.ts`. Add `workGraph` to the existing canvas object;
+legacy required fields remain compatible. Use the same helper, producer,
+registration, publish action and SQLite revision history. No second graph store
+or arbitrary code/HTML is used.
+
+```json
+{
+  "goal": "One owned instruction reaches an independently checked effect",
+  "orientation": "horizontal",
+  "nodes": [
+    {"id":"regression","title":"Reject foreign author binding","kind":"step","state":"active","evidence":[]},
+    {"id":"resolver","title":"Compose trusted resolver","kind":"step","state":"planned","evidence":[]}
+  ],
+  "edges": [{"from":"regression","to":"resolver"}]
+}
+```
+
+Node kinds: `goal`, `step`, `agent`, `result`. States: `planned`, `active`,
+`completed`, `waiting`, `blocked`, `unknown`. Optional node `summary` holds detailed
+context; `agentThreadId` links the responsible agent. Evidence entries contain
+`label` and an optional HTTPS/T3-thread `href`, native `itemId` or `messageId`.
+Completed nodes require a locatable evidence reference. Native references are
+checked against the fresh bounded projection during publish; older sources should
+use a verified reachable source link. An unpublished commit must not be given a
+nonexistent GitHub URL. Evidence is an authored claim with links, not automatic
+proof of installed product acceptance.
+
+Node IDs are stable and unique; edges must reference existing nodes, be unique,
+and form an acyclic dependency graph. Limits: 60 nodes, 120 edges, 20 evidence
+entries per node. Horizontal and vertical orientation are supported; narrow
+screens stack levels. Do not turn each command, commit or test into a work node.
+Publish on initial plan, actual milestone, approach/dependency change, handoff and
+new run/attempt using fresh native identity. Revise the graph to reflect real
+findings; do not make artificial state changes for a demonstration. No percentages
+are inferred from shell activity. The existing responsible agent/PM owns ongoing
+producer instructions; the Inbox owner owns end-to-end rendered acceptance.

@@ -8,7 +8,7 @@ describe('Observatory evidence boundary',()=>{
  it('shows actual native tasks, only pending approvals and explicit missing canvas; loads real omitted result',async()=>{
   vi.stubGlobal('fetch',vi.fn(async(input:string)=>({ok:true,json:async()=>input.includes('itemId=')?{item:{output:'Persisted actual result'}}:input.includes('threadId=')?focus('First agent'):inventory})));
   render(<Observatory/>);fireEvent.click(await screen.findByRole('button',{name:/First agent/}));
-  expect((await screen.findAllByText('Verify active behavior')).length).toBe(2);expect(screen.getByText(/No agent-authored canvas/)).toBeTruthy();
+  expect(await screen.findByText(/Verify active behavior/)).toBeTruthy();fireEvent.click(screen.getByText('Native events, approvals & history'));
   expect(screen.queryByText('Should never appear as a tool')).toBeNull();expect(screen.getByText('tool-approval · pending')).toBeTruthy();expect(screen.queryByText('approval · expired')).toBeNull();
   fireEvent.click(screen.getByText('read-only command',{selector:'summary span'}));fireEvent.click(screen.getByRole('button',{name:'Load actual result'}));expect(await screen.findByText(/Persisted actual result/)).toBeTruthy();expect(screen.queryByRole('heading',{name:/Raw chat/})).toBeNull();
  });
@@ -21,17 +21,16 @@ describe('Observatory evidence boundary',()=>{
  });
 });
 
-it('keeps the five essential sections together, focusable, with identity and history collapsed and no duplicated summary',async()=>{
- const nativeFocus=focus('Current thread');nativeFocus.projection.runs.push({id:'older-run-last-in-array',ordinal:0,activeAttemptId:'old-attempt',status:'complete'});
- const evidence={...nativeFocus,canvases:[{hostId:'host',threadId:'one',runId:'run',attemptId:'attempt',revision:2,publisherId:'producer',publishedAt:'2026-10-16T00:00:00Z',canvas:{title:'Agent Observability',summary:'One current summary only',status:'working',currentStep:'Validate compact viewport',plan:Array.from({length:6},(_,i)=>({id:String(i),text:`Useful step ${i}`,status:i===5?'active':'complete'})),checkpoints:[],layout:{columns:2,panels:['summary','plan','activity','history'],accent:'green'}}}]};
+it('makes authored work and recorded changes primary while logs stay secondary',async()=>{
+ const nativeFocus=focus('Current thread');
+ const evidence={...nativeFocus,canvases:[{hostId:'host',threadId:'one',runId:'run',attemptId:'attempt',revision:2,publisherId:'producer',publishedAt:'2026-10-16T00:00:00Z',canvas:{title:'Agent work',summary:'One current summary only',status:'working',currentStep:'Verify actual admission',plan:[{id:'one',text:'Negative admission fixture',status:'active'}],checkpoints:[],layout:{columns:2,panels:['summary','plan','history'],accent:'blue'}}}]};
  vi.stubGlobal('fetch',vi.fn(async(input:string)=>({ok:true,json:async()=>input.includes('threadId=')?evidence:inventory})));
- const {container}=render(<Observatory/>);fireEvent.click(await screen.findByRole('button',{name:/First agent/}));await screen.findByRole('heading',{name:'Agent Observability'});
- const overview=screen.getByRole('region',{name:'At a glance agent overview'});
- for(const name of ['Current work','Completed work and next tasks','Current and recent tools','Pending approvals and requests','Explicit intentional stops']){
-  const pane=screen.getByRole('article',{name});expect(overview.contains(pane)).toBe(true);expect(pane.getAttribute('tabindex')).toBe('0');pane.focus();expect(document.activeElement).toBe(pane);
- }
- expect(screen.getAllByText('One current summary only')).toHaveLength(1);expect(screen.getAllByText(/Useful step/)).toHaveLength(6);expect(screen.getByRole('button',{name:'Load actual result'})).toBeTruthy();
- expect(container.querySelector('.obs-identity')?.hasAttribute('open')).toBe(false);expect(container.querySelector('.obs-depth')?.hasAttribute('open')).toBe(false);expect(container.querySelector('.obs-selected')).toBeTruthy();
+ const {container}=render(<Observatory/>);fireEvent.click(await screen.findByRole('button',{name:/First agent/}));await screen.findByRole('heading',{name:'Agent work'});
+ expect(screen.getByRole('region',{name:'Recorded agent work'})).toBeTruthy();
+ expect(screen.getAllByText('One current summary only')).toHaveLength(1);
+ expect(container.querySelector('.obs-runtime')?.hasAttribute('open')).toBe(false);
+ fireEvent.click(screen.getByText('Native events, approvals & history'));
+ expect(screen.getByRole('button',{name:'Load actual result'})).toBeTruthy();
 });
 it('uses actual tool names and bounded command previews for scanning',()=>{
  expect(toolLabel({type:'dynamic_tool',title:'dynamic_tool',toolName:'preview_snapshot'})).toBe('preview_snapshot');

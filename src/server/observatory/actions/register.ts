@@ -28,6 +28,7 @@ export async function assertCurrentIdentity(input:Identity) {
       throw new ApiError(409,'Native active attempt is ambiguous');
     }
   }
+  return native;
 }
 
 export default defineAction({
