@@ -656,7 +656,7 @@ export function Inbox() {
           className="list-panel"
           aria-label={`${currentView.title} items`}
         >
-          <header className="list-header">
+          <header className="list-header" tabIndex={0} aria-label="Inbox controls">
             <div className="heading-row">
               <Sheet open={navOpen} onOpenChange={setNavOpen}>
                 <SheetTrigger asChild>

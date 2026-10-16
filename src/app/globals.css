@@ -229,6 +229,9 @@ select {
   flex-direction: column;
 }
 .list-header {
+  max-height: 70dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 30px 22px 15px;
   border-bottom: 1px solid var(--border);
 }

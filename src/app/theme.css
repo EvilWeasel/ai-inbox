@@ -129,7 +129,7 @@
 .search-form button { width: 44px; height: 44px; }
 .filter-row { display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding-top: 10px; }
 .type-filter { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
-.type-filter-chip { min-width: 0; min-height: 48px; height: auto; padding: 5px 2px; display: flex; flex-direction: column; gap: 3px; border: 1px solid transparent; border-radius: 8px; color: var(--inbox-filter-text); font-size: 10px; font-weight: 500; line-height: 1.2; white-space: nowrap; }
+.type-filter-chip { min-width: 0; min-height: 48px; height: auto; padding: 5px 2px; display: flex; flex-direction: column; gap: 3px; border: 1px solid transparent; border-radius: 8px; color: var(--inbox-filter-text); font-size: 10px; font-weight: 500; line-height: 1.2; white-space: normal; overflow-wrap: anywhere; }
 .type-filter-chip svg { width: 15px; height: 15px; stroke-width: 1.8; }
 .type-filter-chip[aria-pressed="true"] { color: var(--inbox-nav-active-text); background: var(--inbox-nav-active); border-color: var(--inbox-line); }
 .type-filter-chip:hover { background: var(--inbox-nav-active); color: var(--inbox-nav-active-text); }
@@ -254,3 +254,6 @@
   .search-form, .player-controls > button, .detail-play-control { transition: none; }
   .inbox-theme-menu { animation: none; }
 }
+
+/* Keep enlarged filter labels inside their controls without truncation. */
+.type-filter-chip span { max-width: 100%; }
