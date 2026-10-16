@@ -5,6 +5,9 @@ agent-authored **work dependency graph**: feature outcome, meaningful steps,
 parallel agents, dependencies, active/waiting/completed work and linked results.
 The graph is not a shell-event graph. The agent updates its nodes, structure and
 orientation through the same typed canvas action and durable revision CAS.
+Dependency lines use gutters outside work cards, including mobile skip edges;
+the selected node's direct connections are emphasized. Its details name actual
+predecessors and successors so visual adjacency never establishes a dependency.
 
 The agent picker retains native parent/child relationships. Selecting an agent
 opens its work graph; selecting a work node opens its results and evidence.
