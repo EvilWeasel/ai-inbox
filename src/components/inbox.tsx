@@ -779,9 +779,10 @@ export function Inbox() {
                 {rankingBusy ? "Ranking…" : "Rank with AI"}
               </Button>
             </div>
-            <p className="ranking-status" role="status">
-              {rankingBusy ? "Evaluating all current inbox items using your recent personal instructions…" : ranking?.state === "ready" ? `AI ranking updated ${formatDate(ranking.completedAt ?? ranking.createdAt,true)}. New or changed items appear as unranked.` : "AI ranking runs only when requested and uses recent instructions from connected personal agent stores."}
-            </p>
+            <details className="ranking-status">
+              <summary>Ranking details</summary>
+              <p>{rankingBusy ? "Ranking…" : ranking?.state === "ready" ? `Updated ${formatDate(ranking.completedAt ?? ranking.createdAt,true)}. New or changed items are unranked.` : "Runs on request using recent personal instructions."}</p>
+            </details>
             {(rankingError || ranking?.state === "failed") && <p className="pagination-error" role="alert">{rankingError || ranking?.error}</p>}
           </header>
           <div
